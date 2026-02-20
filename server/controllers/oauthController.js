@@ -1,0 +1,628 @@
+﻿import axios from 'axios';
+import { v4 as uuidv4 } from 'uuid';
+import { query } from '../config/database.js';
+import { createOAuthState, consumeOAuthState } from '../services/oauthStateStore.js';
+
+const isMockOAuthEnabled = () => String(process.env.SOCIAL_MOCK_OAUTH || 'false').toLowerCase() === 'true';
+
+const getThreadsAppId = () => process.env.THREADS_APP_ID || process.env.INSTAGRAM_APP_ID || '';
+const getThreadsAppSecret = () => process.env.THREADS_APP_SECRET || process.env.INSTAGRAM_APP_SECRET || '';
+const getThreadsRedirectUri = () => process.env.THREADS_REDIRECT_URI || '';
+
+const ensureReturnUrl = (value) => {
+  if (!value) {
+    return `${process.env.CLIENT_URL || 'http://localhost:5176'}/accounts`;
+  }
+  return value;
+};
+
+const appendQuery = (url, key, value) => {
+  const parsed = new URL(url);
+  parsed.searchParams.set(key, value);
+  return parsed.toString();
+};
+
+const redirectWithError = (res, returnUrl, errorCode) => {
+  const fallback = ensureReturnUrl(returnUrl);
+  return res.redirect(appendQuery(fallback, 'error', errorCode));
+};
+
+const redirectWithSuccess = (res, returnUrl, platform) => {
+  const fallback = ensureReturnUrl(returnUrl);
+  return res.redirect(appendQuery(fallback, 'connected', platform));
+};
+
+const upsertConnectedAccount = async ({
+  userId,
+  teamId = null,
+  platform,
+  accountId,
+  accountUsername,
+  accountDisplayName,
+  accessToken,
+  refreshToken = null,
+  tokenExpiresAt = null,
+  profileImageUrl = null,
+  followersCount = 0,
+  metadata = {},
+}) => {
+  const lookup = teamId
+    ? await query(
+        `SELECT id
+         FROM social_connected_accounts
+         WHERE team_id = $1 AND platform = $2 AND account_id = $3
+         LIMIT 1`,
+        [teamId, platform, accountId]
+      )
+    : await query(
+        `SELECT id
+         FROM social_connected_accounts
+         WHERE user_id = $1 AND team_id IS NULL AND platform = $2 AND account_id = $3
+         LIMIT 1`,
+        [userId, platform, accountId]
+      );
+
+  if (lookup.rows[0]) {
+    const id = lookup.rows[0].id;
+    await query(
+      `UPDATE social_connected_accounts
+       SET account_username = $1,
+           account_display_name = $2,
+           access_token = $3,
+           refresh_token = $4,
+           token_expires_at = $5,
+           profile_image_url = $6,
+           followers_count = $7,
+           metadata = $8::jsonb,
+           is_active = true,
+           updated_at = NOW()
+       WHERE id = $9`,
+      [
+        accountUsername,
+        accountDisplayName,
+        accessToken,
+        refreshToken,
+        tokenExpiresAt,
+        profileImageUrl,
+        followersCount,
+        JSON.stringify(metadata || {}),
+        id,
+      ]
+    );
+    return id;
+  }
+
+  const id = uuidv4();
+  await query(
+    `INSERT INTO social_connected_accounts (
+      id, user_id, team_id, platform, account_id, account_username, account_display_name,
+      access_token, refresh_token, token_expires_at, profile_image_url, followers_count,
+      metadata, connected_by, is_active
+    ) VALUES (
+      $1, $2, $3, $4, $5, $6, $7,
+      $8, $9, $10, $11, $12,
+      $13::jsonb, $14, true
+    )`,
+    [
+      id,
+      userId,
+      teamId,
+      platform,
+      accountId,
+      accountUsername,
+      accountDisplayName,
+      accessToken,
+      refreshToken,
+      tokenExpiresAt,
+      profileImageUrl,
+      followersCount,
+      JSON.stringify(metadata || {}),
+      userId,
+    ]
+  );
+
+  return id;
+};
+
+export const connectInstagram = async (req, res) => {
+  const returnUrl = ensureReturnUrl(req.query.returnUrl);
+  const teamId = req.teamContext?.teamId || null;
+
+  const state = createOAuthState({
+    platform: 'instagram',
+    userId: req.user.id,
+    teamId,
+    returnUrl,
+  });
+
+  const appId = process.env.INSTAGRAM_APP_ID;
+  const appSecret = process.env.INSTAGRAM_APP_SECRET;
+  const redirectUri = process.env.INSTAGRAM_REDIRECT_URI;
+
+  if (!appId || !appSecret || !redirectUri || isMockOAuthEnabled()) {
+    return res.redirect(`/api/oauth/instagram/callback?state=${encodeURIComponent(state)}&mock=1`);
+  }
+
+  const version = process.env.INSTAGRAM_API_VERSION || 'v23.0';
+  const scopesRaw = process.env.INSTAGRAM_SCOPES || 'instagram_business_basic,instagram_business_content_publish,pages_show_list,business_management';
+
+  const params = new URLSearchParams({
+    client_id: appId,
+    redirect_uri: redirectUri,
+    state,
+    response_type: 'code',
+    scope: scopesRaw,
+  });
+
+  const authUrl = `https://www.facebook.com/${version}/dialog/oauth?${params.toString()}`;
+  return res.redirect(authUrl);
+};
+
+export const instagramCallback = async (req, res) => {
+  const { state, code, error, mock } = req.query;
+
+  const statePayload = state ? consumeOAuthState(state) : null;
+  if (!statePayload) {
+    return redirectWithError(res, `${process.env.CLIENT_URL || 'http://localhost:5176'}/accounts`, 'invalid_state');
+  }
+
+  const { userId, teamId, returnUrl } = statePayload;
+
+  if (error) {
+    return redirectWithError(res, returnUrl, 'instagram_oauth_denied');
+  }
+
+  try {
+    if (mock === '1' || isMockOAuthEnabled()) {
+      await upsertConnectedAccount({
+        userId,
+        teamId,
+        platform: 'instagram',
+        accountId: `ig_mock_${userId}`,
+        accountUsername: `ig_${String(userId).slice(0, 8)}`,
+        accountDisplayName: 'Instagram Mock Account',
+        accessToken: `mock_instagram_token_${Date.now()}`,
+        refreshToken: null,
+        tokenExpiresAt: null,
+        profileImageUrl: null,
+        followersCount: 1200,
+        metadata: { mock: true },
+      });
+
+      return redirectWithSuccess(res, returnUrl, 'instagram');
+    }
+
+    const version = process.env.INSTAGRAM_API_VERSION || 'v23.0';
+    const redirectUri = process.env.INSTAGRAM_REDIRECT_URI;
+
+    const tokenResponse = await axios.get(`https://graph.facebook.com/${version}/oauth/access_token`, {
+      params: {
+        client_id: process.env.INSTAGRAM_APP_ID,
+        client_secret: process.env.INSTAGRAM_APP_SECRET,
+        redirect_uri: redirectUri,
+        code,
+      },
+      timeout: 15000,
+    });
+
+    const accessToken = tokenResponse.data?.access_token;
+    const expiresIn = Number.parseInt(tokenResponse.data?.expires_in || '0', 10);
+    const tokenExpiresAt = Number.isFinite(expiresIn) && expiresIn > 0
+      ? new Date(Date.now() + expiresIn * 1000).toISOString()
+      : null;
+
+    if (!accessToken) {
+      return redirectWithError(res, returnUrl, 'instagram_token_failed');
+    }
+
+    let accountId = null;
+    let accountUsername = null;
+    let accountDisplayName = null;
+    let profileImageUrl = null;
+    let followersCount = 0;
+    let metadata = {};
+
+    try {
+      const pagesResponse = await axios.get(`https://graph.facebook.com/${version}/me/accounts`, {
+        params: {
+          fields: 'id,name,instagram_business_account{id,username,profile_picture_url,followers_count}',
+          access_token: accessToken,
+        },
+        timeout: 15000,
+      });
+
+      const pageWithInstagram = (pagesResponse.data?.data || []).find(
+        (page) => page.instagram_business_account && page.instagram_business_account.id
+      );
+
+      if (pageWithInstagram) {
+        const ig = pageWithInstagram.instagram_business_account;
+        accountId = String(ig.id);
+        accountUsername = ig.username || pageWithInstagram.name || `instagram_${ig.id}`;
+        accountDisplayName = ig.username || pageWithInstagram.name || 'Instagram Account';
+        profileImageUrl = ig.profile_picture_url || null;
+        followersCount = Number.parseInt(ig.followers_count || '0', 10) || 0;
+        metadata = {
+          pageId: pageWithInstagram.id,
+          pageName: pageWithInstagram.name,
+        };
+      }
+    } catch {
+      // Fall back to basic profile lookup.
+    }
+
+    if (!accountId) {
+      const profileResponse = await axios.get(`https://graph.facebook.com/${version}/me`, {
+        params: {
+          fields: 'id,name',
+          access_token: accessToken,
+        },
+        timeout: 15000,
+      });
+
+      accountId = String(profileResponse.data?.id || `ig_user_${userId}`);
+      accountUsername = profileResponse.data?.name?.replace(/\s+/g, '').toLowerCase() || `instagram_${accountId}`;
+      accountDisplayName = profileResponse.data?.name || 'Instagram Account';
+      metadata = {
+        profileType: 'facebook_user_fallback',
+      };
+    }
+
+    await upsertConnectedAccount({
+      userId,
+      teamId,
+      platform: 'instagram',
+      accountId,
+      accountUsername,
+      accountDisplayName,
+      accessToken,
+      refreshToken: null,
+      tokenExpiresAt,
+      profileImageUrl,
+      followersCount,
+      metadata,
+    });
+
+    return redirectWithSuccess(res, returnUrl, 'instagram');
+  } catch {
+    return redirectWithError(res, returnUrl, 'instagram_connection_failed');
+  }
+};
+
+export const connectThreads = async (req, res) => {
+  const returnUrl = ensureReturnUrl(req.query.returnUrl);
+  const teamId = req.teamContext?.teamId || null;
+
+  const state = createOAuthState({
+    platform: 'threads',
+    userId: req.user.id,
+    teamId,
+    returnUrl,
+  });
+
+  const appId = getThreadsAppId();
+  const appSecret = getThreadsAppSecret();
+  const redirectUri = getThreadsRedirectUri();
+
+  if (isMockOAuthEnabled()) {
+    return res.redirect(`/api/oauth/threads/callback?state=${encodeURIComponent(state)}&mock=1`);
+  }
+
+  if (!appId || !appSecret || !redirectUri) {
+    return redirectWithError(res, returnUrl, 'threads_oauth_not_configured');
+  }
+
+  const scopesRaw = process.env.THREADS_SCOPES || 'threads_basic,threads_content_publish';
+  const params = new URLSearchParams({
+    client_id: appId,
+    redirect_uri: redirectUri,
+    scope: scopesRaw,
+    response_type: 'code',
+    state,
+  });
+
+  const authUrl = `https://www.threads.net/oauth/authorize?${params.toString()}`;
+  return res.redirect(authUrl);
+};
+
+export const threadsCallback = async (req, res) => {
+  const { state, code, error, mock } = req.query;
+
+  const statePayload = state ? consumeOAuthState(state) : null;
+  if (!statePayload) {
+    return redirectWithError(res, `${process.env.CLIENT_URL || 'http://localhost:5176'}/accounts`, 'invalid_state');
+  }
+
+  const { userId, teamId, returnUrl } = statePayload;
+
+  if (error) {
+    return redirectWithError(res, returnUrl, 'threads_oauth_denied');
+  }
+
+  try {
+    if (mock === '1' || isMockOAuthEnabled()) {
+      await upsertConnectedAccount({
+        userId,
+        teamId,
+        platform: 'threads',
+        accountId: `threads_mock_${userId}`,
+        accountUsername: `threads_${String(userId).slice(0, 8)}`,
+        accountDisplayName: 'Threads Mock Account',
+        accessToken: `mock_threads_token_${Date.now()}`,
+        refreshToken: null,
+        tokenExpiresAt: null,
+        profileImageUrl: null,
+        followersCount: 0,
+        metadata: { mock: true },
+      });
+
+      return redirectWithSuccess(res, returnUrl, 'threads');
+    }
+
+    if (!code) {
+      return redirectWithError(res, returnUrl, 'threads_code_missing');
+    }
+
+    const appId = getThreadsAppId();
+    const appSecret = getThreadsAppSecret();
+    const redirectUri = getThreadsRedirectUri();
+
+    if (!appId || !appSecret || !redirectUri) {
+      return redirectWithError(res, returnUrl, 'threads_oauth_not_configured');
+    }
+
+    const tokenResponse = await axios.post(
+      'https://graph.threads.net/oauth/access_token',
+      new URLSearchParams({
+        client_id: appId,
+        client_secret: appSecret,
+        grant_type: 'authorization_code',
+        redirect_uri: redirectUri,
+        code: String(code),
+      }).toString(),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        timeout: 15000,
+      }
+    );
+
+    const shortLivedToken = tokenResponse.data?.access_token;
+    const tokenUserId = String(tokenResponse.data?.user_id || '');
+
+    if (!shortLivedToken) {
+      return redirectWithError(res, returnUrl, 'threads_token_failed');
+    }
+
+    let accessToken = shortLivedToken;
+    let tokenExpiresAt = null;
+    let longLivedApplied = false;
+
+    try {
+      const longLived = await axios.get('https://graph.threads.net/access_token', {
+        params: {
+          grant_type: 'th_exchange_token',
+          client_secret: appSecret,
+          access_token: shortLivedToken,
+        },
+        timeout: 15000,
+      });
+
+      if (longLived.data?.access_token) {
+        accessToken = longLived.data.access_token;
+        longLivedApplied = true;
+      }
+
+      const expiresIn = Number.parseInt(longLived.data?.expires_in || '0', 10);
+      if (Number.isFinite(expiresIn) && expiresIn > 0) {
+        tokenExpiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
+      }
+    } catch {
+      // Continue with short-lived token when long-lived exchange fails.
+    }
+
+    let profile = null;
+    try {
+      const meResponse = await axios.get('https://graph.threads.net/v1.0/me', {
+        params: {
+          fields: 'id,username,name,threads_profile_picture_url',
+          access_token: accessToken,
+        },
+        timeout: 15000,
+      });
+      profile = meResponse.data || null;
+    } catch {
+      if (tokenUserId) {
+        const userResponse = await axios.get(`https://graph.threads.net/v1.0/${tokenUserId}`, {
+          params: {
+            fields: 'id,username,name,threads_profile_picture_url',
+            access_token: accessToken,
+          },
+          timeout: 15000,
+        });
+        profile = userResponse.data || null;
+      }
+    }
+
+    const accountId = String(profile?.id || tokenUserId || `threads_user_${userId}`);
+    const accountUsername = profile?.username || `threads_${accountId}`;
+    const accountDisplayName = profile?.name || profile?.username || 'Threads Account';
+
+    await upsertConnectedAccount({
+      userId,
+      teamId,
+      platform: 'threads',
+      accountId,
+      accountUsername,
+      accountDisplayName,
+      accessToken,
+      refreshToken: null,
+      tokenExpiresAt,
+      profileImageUrl: profile?.threads_profile_picture_url || null,
+      followersCount: 0,
+      metadata: {
+        profileFetched: Boolean(profile?.id),
+        longLivedApplied,
+      },
+    });
+
+    return redirectWithSuccess(res, returnUrl, 'threads');
+  } catch {
+    return redirectWithError(res, returnUrl, 'threads_connection_failed');
+  }
+};
+
+export const connectYoutube = async (req, res) => {
+  const returnUrl = ensureReturnUrl(req.query.returnUrl);
+  const teamId = req.teamContext?.teamId || null;
+
+  const state = createOAuthState({
+    platform: 'youtube',
+    userId: req.user.id,
+    teamId,
+    returnUrl,
+  });
+
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const redirectUri = process.env.YOUTUBE_REDIRECT_URI;
+
+  if (!clientId || !clientSecret || !redirectUri || isMockOAuthEnabled()) {
+    return res.redirect(`/api/oauth/youtube/callback?state=${encodeURIComponent(state)}&mock=1`);
+  }
+
+  const scopes = (process.env.YOUTUBE_SCOPES || '').trim() || [
+    'https://www.googleapis.com/auth/youtube.upload',
+    'https://www.googleapis.com/auth/youtube.readonly',
+    'https://www.googleapis.com/auth/yt-analytics.readonly',
+  ].join(' ');
+
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    access_type: 'offline',
+    prompt: 'consent',
+    include_granted_scopes: 'true',
+    scope: scopes,
+    state,
+  });
+
+  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+  return res.redirect(authUrl);
+};
+
+export const youtubeCallback = async (req, res) => {
+  const { state, code, error, mock } = req.query;
+
+  const statePayload = state ? consumeOAuthState(state) : null;
+  if (!statePayload) {
+    return redirectWithError(res, `${process.env.CLIENT_URL || 'http://localhost:5176'}/accounts`, 'invalid_state');
+  }
+
+  const { userId, teamId, returnUrl } = statePayload;
+
+  if (error) {
+    return redirectWithError(res, returnUrl, 'youtube_oauth_denied');
+  }
+
+  try {
+    if (mock === '1' || isMockOAuthEnabled()) {
+      await upsertConnectedAccount({
+        userId,
+        teamId,
+        platform: 'youtube',
+        accountId: `yt_mock_${userId}`,
+        accountUsername: `yt_${String(userId).slice(0, 8)}`,
+        accountDisplayName: 'YouTube Mock Channel',
+        accessToken: `mock_youtube_token_${Date.now()}`,
+        refreshToken: `mock_youtube_refresh_${Date.now()}`,
+        tokenExpiresAt: null,
+        profileImageUrl: null,
+        followersCount: 3400,
+        metadata: { mock: true },
+      });
+
+      return redirectWithSuccess(res, returnUrl, 'youtube');
+    }
+
+    const tokenResponse = await axios.post(
+      'https://oauth2.googleapis.com/token',
+      new URLSearchParams({
+        code,
+        client_id: process.env.GOOGLE_CLIENT_ID,
+        client_secret: process.env.GOOGLE_CLIENT_SECRET,
+        redirect_uri: process.env.YOUTUBE_REDIRECT_URI,
+        grant_type: 'authorization_code',
+      }).toString(),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        timeout: 15000,
+      }
+    );
+
+    const accessToken = tokenResponse.data?.access_token;
+    const refreshToken = tokenResponse.data?.refresh_token || null;
+    const expiresIn = Number.parseInt(tokenResponse.data?.expires_in || '0', 10);
+
+    if (!accessToken) {
+      return redirectWithError(res, returnUrl, 'youtube_token_failed');
+    }
+
+    const tokenExpiresAt = Number.isFinite(expiresIn) && expiresIn > 0
+      ? new Date(Date.now() + expiresIn * 1000).toISOString()
+      : null;
+
+    const channelResponse = await axios.get('https://www.googleapis.com/youtube/v3/channels', {
+      params: {
+        part: 'snippet,statistics',
+        mine: 'true',
+      },
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+      timeout: 15000,
+    });
+
+    const channel = channelResponse.data?.items?.[0];
+    if (!channel?.id) {
+      return redirectWithError(res, returnUrl, 'youtube_channel_not_found');
+    }
+
+    const accountId = String(channel.id);
+    const accountDisplayName = channel.snippet?.title || 'YouTube Channel';
+    const accountUsername =
+      channel.snippet?.customUrl?.replace(/^@/, '') ||
+      accountDisplayName.replace(/\s+/g, '').toLowerCase();
+    const profileImageUrl =
+      channel.snippet?.thumbnails?.default?.url ||
+      channel.snippet?.thumbnails?.medium?.url ||
+      null;
+    const followersCount = Number.parseInt(channel.statistics?.subscriberCount || '0', 10) || 0;
+
+    await upsertConnectedAccount({
+      userId,
+      teamId,
+      platform: 'youtube',
+      accountId,
+      accountUsername,
+      accountDisplayName,
+      accessToken,
+      refreshToken,
+      tokenExpiresAt,
+      profileImageUrl,
+      followersCount,
+      metadata: {
+        channelId: accountId,
+        videoCount: Number.parseInt(channel.statistics?.videoCount || '0', 10) || 0,
+      },
+    });
+
+    return redirectWithSuccess(res, returnUrl, 'youtube');
+  } catch {
+    return redirectWithError(res, returnUrl, 'youtube_connection_failed');
+  }
+};
