@@ -24,9 +24,9 @@ import { ensureSchema } from './config/schema.js';
 import { logger } from './utils/logger.js';
 import { startScheduledPostWorker, stopScheduledPostWorker } from './services/scheduledPostWorker.js';
 
-dotenv.config();
-
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Always load server/.env even when process is started from monorepo root.
+dotenv.config({ path: path.resolve(__dirname, '.env') });
 const app = express();
 
 const PORT = Number.parseInt(process.env.PORT || '3006', 10);

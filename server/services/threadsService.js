@@ -204,6 +204,14 @@ const resolveLiveThreadsAccountId = async ({ accountId, accessToken }) => {
   return String(accountId || '').trim();
 };
 
+const normalizeThreadsPostId = (value) => String(value || '').trim();
+
+const looksLikeThreadsPostId = (value) => {
+  const normalized = normalizeThreadsPostId(value);
+  if (!normalized) return false;
+  return /^[0-9_]+$/.test(normalized) && normalized.length >= 6;
+};
+
 export const publishThreadsPost = async ({
   accountId,
   accessToken,
@@ -371,5 +379,69 @@ export const publishThreadsThread = async ({
   return {
     publishId: publishedIds[0],
     threadPostIds: publishedIds,
+  };
+};
+
+export const deleteThreadsPosts = async ({ accessToken, postIds = [] }) => {
+  if (!accessToken) {
+    throw asHttpError(400, 'Threads access token is missing. Reconnect Threads account.', 'THREADS_TOKEN_MISSING');
+  }
+
+  const normalized = [...new Set(
+    (Array.isArray(postIds) ? postIds : [])
+      .map((postId) => normalizeThreadsPostId(postId))
+      .filter((postId) => looksLikeThreadsPostId(postId))
+  )];
+
+  if (normalized.length === 0) {
+    throw asHttpError(400, 'Threads post id is missing. Cannot delete on Threads.', 'THREADS_DELETE_ID_MISSING');
+  }
+
+  const deletedIds = [];
+  const missingIds = [];
+
+  for (const postId of [...normalized].reverse()) {
+    const endpoint = `${THREADS_GRAPH_BASE}/${THREADS_API_VERSION}/${postId}`;
+    try {
+      const response = await axios.delete(endpoint, {
+        params: {
+          access_token: accessToken,
+        },
+        timeout: 25000,
+      });
+
+      if (response?.data?.success === false) {
+        throw asHttpError(400, 'Threads delete API returned unsuccessful response', 'THREADS_DELETE_FAILED');
+      }
+
+      deletedIds.push(postId);
+    } catch (error) {
+      if (isMissingResourceError(error)) {
+        missingIds.push(postId);
+        continue;
+      }
+
+      const providerMessage = extractProviderError(error);
+      const status = Number(error?.response?.status || 0);
+      if (status === 401 || status === 403) {
+        throw asHttpError(
+          403,
+          'Threads delete permission denied. Reconnect Threads with delete scope and try again.',
+          'THREADS_DELETE_PERMISSION_DENIED'
+        );
+      }
+
+      throw asHttpError(
+        400,
+        `Failed to delete Threads post ${postId}: ${providerMessage || 'Unknown provider error'}`,
+        'THREADS_DELETE_FAILED'
+      );
+    }
+  }
+
+  return {
+    deletedIds,
+    missingIds,
+    attemptedIds: normalized,
   };
 };

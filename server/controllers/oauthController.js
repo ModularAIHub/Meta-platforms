@@ -4,10 +4,28 @@ import { query } from '../config/database.js';
 import { createOAuthState, consumeOAuthState } from '../services/oauthStateStore.js';
 
 const isMockOAuthEnabled = () => String(process.env.SOCIAL_MOCK_OAUTH || 'false').toLowerCase() === 'true';
+const THREADS_OAUTH_AUTHORIZE_URL =
+  process.env.THREADS_OAUTH_AUTHORIZE_URL || 'https://threads.net/oauth/authorize';
 
-const getThreadsAppId = () => process.env.THREADS_APP_ID || process.env.INSTAGRAM_APP_ID || '';
-const getThreadsAppSecret = () => process.env.THREADS_APP_SECRET || process.env.INSTAGRAM_APP_SECRET || '';
-const getThreadsRedirectUri = () => process.env.THREADS_REDIRECT_URI || '';
+const getFirstEnvValue = (...keys) => {
+  for (const key of keys) {
+    const value = process.env[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return '';
+};
+
+const getThreadsAppId = () => getFirstEnvValue('THREADS_APP_ID', 'THREADS_CLIENT_ID', 'INSTAGRAM_APP_ID');
+const getThreadsAppSecret = () =>
+  getFirstEnvValue('THREADS_APP_SECRET', 'THREADS_CLIENT_SECRET', 'INSTAGRAM_APP_SECRET');
+const getThreadsRedirectUri = () => getFirstEnvValue('THREADS_REDIRECT_URI');
+const isThreadsTesterPermissionError = (error) => {
+  const payload = error?.response?.data?.error || {};
+  const message = String(payload.message || '').toLowerCase();
+  return payload.error_subcode === 10 || message.includes('threads_basic permission');
+};
 
 const ensureReturnUrl = (value) => {
   if (!value) {
@@ -290,8 +308,11 @@ export const instagramCallback = async (req, res) => {
 };
 
 export const connectThreads = async (req, res) => {
+  console.log('[THREADS CONNECT] Started');
   const returnUrl = ensureReturnUrl(req.query.returnUrl);
   const teamId = req.teamContext?.teamId || null;
+
+  console.log('[THREADS CONNECT] User:', { userId: req.user.id, teamId, returnUrl });
 
   const state = createOAuthState({
     platform: 'threads',
@@ -300,15 +321,21 @@ export const connectThreads = async (req, res) => {
     returnUrl,
   });
 
+  console.log('[THREADS CONNECT] State created:', state.substring(0, 8));
+
   const appId = getThreadsAppId();
   const appSecret = getThreadsAppSecret();
   const redirectUri = getThreadsRedirectUri();
 
+  console.log('[THREADS CONNECT] Config:', { appId: appId?.substring(0, 8), redirectUri });
+
   if (isMockOAuthEnabled()) {
+    console.log('[THREADS CONNECT] Mock mode enabled, redirecting to callback');
     return res.redirect(`/api/oauth/threads/callback?state=${encodeURIComponent(state)}&mock=1`);
   }
 
   if (!appId || !appSecret || !redirectUri) {
+    console.error('[THREADS CONNECT] Missing OAuth configuration');
     return redirectWithError(res, returnUrl, 'threads_oauth_not_configured');
   }
 
@@ -321,21 +348,27 @@ export const connectThreads = async (req, res) => {
     state,
   });
 
-  const authUrl = `https://www.threads.net/oauth/authorize?${params.toString()}`;
+  const authUrl = `${THREADS_OAUTH_AUTHORIZE_URL}?${params.toString()}`;
+  console.log('[THREADS CONNECT] Redirecting to Threads OAuth URL:', authUrl);
   return res.redirect(authUrl);
 };
 
 export const threadsCallback = async (req, res) => {
   const { state, code, error, mock } = req.query;
 
+  console.log('[THREADS CALLBACK] Started', { state: state?.substring(0, 8), code: code?.substring(0, 8), error, mock });
+
   const statePayload = state ? consumeOAuthState(state) : null;
   if (!statePayload) {
+    console.error('[THREADS CALLBACK] Invalid or expired state');
     return redirectWithError(res, `${process.env.CLIENT_URL || 'http://localhost:5176'}/accounts`, 'invalid_state');
   }
 
   const { userId, teamId, returnUrl } = statePayload;
+  console.log('[THREADS CALLBACK] State payload:', { userId, teamId, returnUrl });
 
   if (error) {
+    console.error('[THREADS CALLBACK] OAuth error from Threads:', error);
     return redirectWithError(res, returnUrl, 'threads_oauth_denied');
   }
 
@@ -356,10 +389,12 @@ export const threadsCallback = async (req, res) => {
         metadata: { mock: true },
       });
 
+      console.log('[THREADS CALLBACK] Mock connection successful');
       return redirectWithSuccess(res, returnUrl, 'threads');
     }
 
     if (!code) {
+      console.error('[THREADS CALLBACK] No authorization code received');
       return redirectWithError(res, returnUrl, 'threads_code_missing');
     }
 
@@ -367,10 +402,14 @@ export const threadsCallback = async (req, res) => {
     const appSecret = getThreadsAppSecret();
     const redirectUri = getThreadsRedirectUri();
 
+    console.log('[THREADS CALLBACK] Config:', { appId: appId?.substring(0, 8), redirectUri });
+
     if (!appId || !appSecret || !redirectUri) {
+      console.error('[THREADS CALLBACK] Missing OAuth configuration');
       return redirectWithError(res, returnUrl, 'threads_oauth_not_configured');
     }
 
+    console.log('[THREADS CALLBACK] Exchanging code for token...');
     const tokenResponse = await axios.post(
       'https://graph.threads.net/oauth/access_token',
       new URLSearchParams({
@@ -388,10 +427,16 @@ export const threadsCallback = async (req, res) => {
       }
     );
 
+    console.log('[THREADS CALLBACK] Token response received:', { 
+      hasToken: !!tokenResponse.data?.access_token,
+      userId: tokenResponse.data?.user_id 
+    });
+
     const shortLivedToken = tokenResponse.data?.access_token;
     const tokenUserId = String(tokenResponse.data?.user_id || '');
 
     if (!shortLivedToken) {
+      console.error('[THREADS CALLBACK] No access token in response');
       return redirectWithError(res, returnUrl, 'threads_token_failed');
     }
 
@@ -400,6 +445,7 @@ export const threadsCallback = async (req, res) => {
     let longLivedApplied = false;
 
     try {
+      console.log('[THREADS CALLBACK] Exchanging for long-lived token...');
       const longLived = await axios.get('https://graph.threads.net/access_token', {
         params: {
           grant_type: 'th_exchange_token',
@@ -412,18 +458,21 @@ export const threadsCallback = async (req, res) => {
       if (longLived.data?.access_token) {
         accessToken = longLived.data.access_token;
         longLivedApplied = true;
+        console.log('[THREADS CALLBACK] Long-lived token obtained');
       }
 
       const expiresIn = Number.parseInt(longLived.data?.expires_in || '0', 10);
       if (Number.isFinite(expiresIn) && expiresIn > 0) {
         tokenExpiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
       }
-    } catch {
+    } catch (longLivedError) {
+      console.warn('[THREADS CALLBACK] Long-lived token exchange failed:', longLivedError.message);
       // Continue with short-lived token when long-lived exchange fails.
     }
 
     let profile = null;
     try {
+      console.log('[THREADS CALLBACK] Fetching profile...');
       const meResponse = await axios.get('https://graph.threads.net/v1.0/me', {
         params: {
           fields: 'id,username,name,threads_profile_picture_url',
@@ -432,7 +481,9 @@ export const threadsCallback = async (req, res) => {
         timeout: 15000,
       });
       profile = meResponse.data || null;
-    } catch {
+      console.log('[THREADS CALLBACK] Profile fetched:', { id: profile?.id, username: profile?.username });
+    } catch (profileError) {
+      console.warn('[THREADS CALLBACK] Profile fetch failed, trying with user_id:', profileError.message);
       if (tokenUserId) {
         const userResponse = await axios.get(`https://graph.threads.net/v1.0/${tokenUserId}`, {
           params: {
@@ -442,12 +493,15 @@ export const threadsCallback = async (req, res) => {
           timeout: 15000,
         });
         profile = userResponse.data || null;
+        console.log('[THREADS CALLBACK] Profile fetched via user_id:', { id: profile?.id, username: profile?.username });
       }
     }
 
     const accountId = String(profile?.id || tokenUserId || `threads_user_${userId}`);
     const accountUsername = profile?.username || `threads_${accountId}`;
     const accountDisplayName = profile?.name || profile?.username || 'Threads Account';
+
+    console.log('[THREADS CALLBACK] Saving account:', { accountId, accountUsername });
 
     await upsertConnectedAccount({
       userId,
@@ -467,8 +521,14 @@ export const threadsCallback = async (req, res) => {
       },
     });
 
+    console.log('[THREADS CALLBACK] Connection successful, redirecting to:', returnUrl);
     return redirectWithSuccess(res, returnUrl, 'threads');
-  } catch {
+  } catch (error) {
+    console.error('[THREADS CALLBACK] Error:', error.message);
+    console.error('[THREADS CALLBACK] Error details:', error.response?.data || error);
+    if (isThreadsTesterPermissionError(error)) {
+      return redirectWithError(res, returnUrl, 'threads_tester_or_app_review_required');
+    }
     return redirectWithError(res, returnUrl, 'threads_connection_failed');
   }
 };

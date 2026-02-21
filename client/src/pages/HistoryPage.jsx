@@ -50,6 +50,10 @@ const statusMeta = {
 const parsePostTime = (post) =>
   new Date(post.posted_at || post.scheduled_for || post.created_at || 0).getTime();
 
+const hasThreadsPlatform = (post) =>
+  Array.isArray(post?.platforms) &&
+  post.platforms.some((platform) => String(platform || '').toLowerCase() === 'threads');
+
 const applyFallbackFilters = (posts, { status, platform, days, sort }) => {
   const now = Date.now();
   const since = Number.isFinite(days) && days > 0 ? now - (days * 24 * 60 * 60 * 1000) : null;
@@ -146,14 +150,24 @@ const HistoryPage = () => {
     [posts]
   );
 
-  const handleDelete = async (postId) => {
-    const confirmed = window.confirm('Delete this post from history?');
+  const handleDelete = async (post) => {
+    const postId = post?.id;
+    if (!postId) {
+      toast.error('This post cannot be deleted right now (missing id).');
+      return;
+    }
+
+    const threadsSync = post?.status === 'deleted' && hasThreadsPlatform(post);
+    const confirmMessage = threadsSync
+      ? 'This post is already marked deleted locally. Sync delete on Threads now?'
+      : 'Delete this post from history?';
+    const confirmed = window.confirm(confirmMessage);
     if (!confirmed) return;
 
     try {
       setDeletingId(postId);
-      await postsApi.delete(postId);
-      toast.success('Post deleted');
+      const response = await postsApi.delete(postId);
+      toast.success(response?.data?.message || 'Post deleted');
       await fetchHistory();
     } catch (error) {
       toast.error(error.response?.data?.error || 'Failed to delete post');
@@ -261,15 +275,29 @@ const HistoryPage = () => {
                   </div>
                 </div>
 
+                {(() => {
+                  const retryThreadsDelete = post.status === 'deleted' && hasThreadsPlatform(post);
+                  const disabled = !post.id || deletingId === post.id || (post.status === 'deleted' && !retryThreadsDelete);
+                  const label = deletingId === post.id
+                    ? 'Deleting...'
+                    : retryThreadsDelete
+                      ? 'Sync delete'
+                      : post.status === 'deleted'
+                        ? 'Deleted'
+                        : 'Delete';
+
+                  return (
                 <button
                   type="button"
                   className="inline-flex items-center gap-1 text-sm text-red-600 hover:text-red-700 disabled:opacity-50"
-                  disabled={deletingId === post.id || post.status === 'deleted'}
-                  onClick={() => handleDelete(post.id)}
+                  disabled={disabled}
+                  onClick={() => handleDelete(post)}
                 >
                   <Trash2 className="h-4 w-4" />
-                  {deletingId === post.id ? 'Deleting...' : post.status === 'deleted' ? 'Deleted' : 'Delete'}
+                  {label}
                 </button>
+                  );
+                })()}
               </div>
             </div>
           ))}

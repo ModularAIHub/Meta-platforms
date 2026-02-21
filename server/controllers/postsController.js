@@ -2,7 +2,7 @@
 import { query } from '../config/database.js';
 import { TeamCreditService } from '../services/teamCreditService.js';
 import { publishInstagramPost } from '../services/instagramService.js';
-import { publishThreadsPost, publishThreadsThread } from '../services/threadsService.js';
+import { publishThreadsPost, publishThreadsThread, deleteThreadsPosts } from '../services/threadsService.js';
 import { publishYoutubeVideo } from '../services/youtubeService.js';
 import { mapSocialPublishError } from '../utils/publishErrors.js';
 
@@ -18,6 +18,7 @@ const THREADS_AUTO_SPLIT_MAX_CHARS = Math.max(
 );
 const THREADS_MAX_CHAIN_POSTS = Math.max(2, Number.parseInt(process.env.THREADS_MAX_CHAIN_POSTS || '30', 10));
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.m4v', '.webm', '.avi', '.mpeg', '.mpg']);
+const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const createHttpError = (status, message, code = null) => {
   const error = new Error(message);
@@ -26,6 +27,37 @@ const createHttpError = (status, message, code = null) => {
     error.code = code;
   }
   return error;
+};
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isTransientDbConnectionError = (error) => {
+  const code = String(error?.code || '').toUpperCase();
+  const message = String(error?.message || '').toLowerCase();
+
+  if (['57P01', '57P02', '57P03', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE'].includes(code)) {
+    return true;
+  }
+
+  return (
+    message.includes('connection terminated unexpectedly') ||
+    message.includes('connection terminated due to connection timeout') ||
+    message.includes('connection reset by peer') ||
+    message.includes('terminating connection due to administrator command')
+  );
+};
+
+const queryWithSingleRetry = async (text, params = []) => {
+  try {
+    return await query(text, params);
+  } catch (error) {
+    if (!isTransientDbConnectionError(error)) {
+      throw error;
+    }
+
+    await sleep(120);
+    return query(text, params);
+  }
 };
 
 const resolveCaptionLimit = (platforms = []) => {
@@ -106,6 +138,43 @@ const normalizeThreadsPosts = (input) => {
   return input
     .map((item) => String(item || '').trim())
     .filter(Boolean);
+};
+
+const parseJsonArray = (value) => {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+};
+
+const looksLikeThreadsPostId = (value) => {
+  const normalized = String(value || '').trim();
+  if (!normalized) return false;
+  return /^[0-9_]+$/.test(normalized) && normalized.length >= 6;
+};
+
+const collectThreadsDeletionIds = (post) => {
+  const ids = [];
+
+  const primaryId = String(post?.threads_post_id || '').trim();
+  if (looksLikeThreadsPostId(primaryId)) {
+    ids.push(primaryId);
+  }
+
+  for (const item of parseJsonArray(post?.threads_sequence)) {
+    const candidate = String(item || '').trim();
+    if (looksLikeThreadsPostId(candidate)) {
+      ids.push(candidate);
+    }
+  }
+
+  return [...new Set(ids)];
 };
 
 const isVideoMediaUrl = (value) => {
@@ -196,16 +265,16 @@ const splitThreadsCaption = (text, limit = PLATFORM_CAPTION_LIMITS.threads, maxP
   return posts;
 };
 
-const buildOwnershipClause = ({ isTeamMember, teamId, userId }) => {
+const buildOwnershipClause = ({ isTeamMember, teamId, userId, startIndex = 1 }) => {
   if (isTeamMember && teamId) {
     return {
-      clause: 'team_id = $1',
+      clause: `team_id = $${startIndex}`,
       params: [teamId],
     };
   }
 
   return {
-    clause: 'user_id = $1 AND team_id IS NULL',
+    clause: `user_id = $${startIndex} AND team_id IS NULL`,
     params: [userId],
   };
 };
@@ -595,7 +664,7 @@ export const createPost = async (req, res) => {
           instagramPostId,
           youtubeVideoId,
           threadsPostId,
-          JSON.stringify(isThreadsThread ? effectiveThreadsPosts : threadPostIds),
+          JSON.stringify(isThreadsThread && !postNow ? effectiveThreadsPosts : threadPostIds),
           metrics.instagram_likes,
           metrics.instagram_comments,
           metrics.instagram_reach,
@@ -925,9 +994,13 @@ export const deleteHistoryPost = async (req, res) => {
       return res.status(400).json({ error: 'postId is required', code: 'POST_ID_REQUIRED' });
     }
 
-    const { clause, params } = buildOwnershipClause({ isTeamMember, teamId, userId });
-    const lookup = await query(
-      `SELECT id, status
+    if (!UUID_V4_PATTERN.test(postId)) {
+      return res.status(400).json({ error: 'Invalid postId format', code: 'POST_ID_INVALID' });
+    }
+
+    const { clause, params } = buildOwnershipClause({ isTeamMember, teamId, userId, startIndex: 2 });
+    const lookup = await queryWithSingleRetry(
+      `SELECT id, status, platforms, threads_post_id, threads_sequence
        FROM social_posts
        WHERE id = $1 AND ${clause}
        LIMIT 1`,
@@ -939,11 +1012,51 @@ export const deleteHistoryPost = async (req, res) => {
       return res.status(404).json({ error: 'Post not found', code: 'POST_NOT_FOUND' });
     }
 
-    if (found.status === 'deleted') {
-      return res.json({ success: true, message: 'Post already deleted' });
+    const platforms = parseJsonArray(found.platforms).map((platform) => String(platform || '').toLowerCase());
+    const hasThreads = platforms.includes('threads');
+    const isAlreadyDeleted = found.status === 'deleted';
+    const threadIds = hasThreads ? collectThreadsDeletionIds(found) : [];
+    const shouldDeleteOnThreads = hasThreads && (
+      found.status === 'posted' ||
+      (isAlreadyDeleted && threadIds.length > 0)
+    );
+
+    if (shouldDeleteOnThreads) {
+      const threadsAccount = await getConnectedAccountByPlatform({
+        userId,
+        teamId,
+        isTeamMember,
+        platform: 'threads',
+      });
+
+      if (!threadsAccount?.access_token) {
+        return res.status(400).json({
+          error: 'Threads account token is missing. Reconnect Threads before deleting published posts.',
+          code: 'THREADS_TOKEN_MISSING',
+        });
+      }
+
+      if (threadIds.length === 0) {
+        return res.status(409).json({
+          error: 'Threads post ID is missing for this item. Delete it manually on Threads, then retry history delete.',
+          code: 'THREADS_DELETE_ID_MISSING',
+        });
+      }
+
+      await deleteThreadsPosts({
+        accessToken: threadsAccount.access_token,
+        postIds: threadIds,
+      });
     }
 
-    await query(
+    if (isAlreadyDeleted) {
+      return res.json({
+        success: true,
+        message: shouldDeleteOnThreads ? 'Post already deleted; Threads sync completed.' : 'Post already deleted',
+      });
+    }
+
+    await queryWithSingleRetry(
       `UPDATE social_posts
        SET status = 'deleted',
            updated_at = NOW()
@@ -953,6 +1066,20 @@ export const deleteHistoryPost = async (req, res) => {
 
     return res.json({ success: true, message: 'Post deleted' });
   } catch (error) {
+    if (isTransientDbConnectionError(error)) {
+      return res.status(503).json({
+        error: 'Database connection was interrupted. Please retry delete.',
+        code: 'DB_CONNECTION_INTERRUPTED',
+      });
+    }
+
+    if (Number.isInteger(error.status)) {
+      return res.status(error.status).json({
+        error: error.message || 'Failed to delete post',
+        code: error.code || null,
+      });
+    }
+
     return res.status(500).json({ error: 'Failed to delete post', details: error.message });
   }
 };

@@ -11,16 +11,16 @@ const resolveContextParams = (req) => {
   };
 };
 
-const buildOwnershipClause = ({ isTeamMember, teamId, userId }) => {
+const buildOwnershipClause = ({ isTeamMember, teamId, userId, startIndex = 1 }) => {
   if (isTeamMember && teamId) {
     return {
-      clause: 'team_id = $1',
+      clause: `team_id = $${startIndex}`,
       params: [teamId],
     };
   }
 
   return {
-    clause: 'user_id = $1 AND team_id IS NULL',
+    clause: `user_id = $${startIndex} AND team_id IS NULL`,
     params: [userId],
   };
 };
@@ -78,7 +78,7 @@ export const reschedulePost = async (req, res) => {
       return res.status(400).json({ error: 'scheduledFor is required', code: 'SCHEDULED_FOR_REQUIRED' });
     }
 
-    const { clause, params } = buildOwnershipClause({ isTeamMember, teamId, userId });
+    const { clause, params } = buildOwnershipClause({ isTeamMember, teamId, userId, startIndex: 2 });
     const lookup = await query(
       `SELECT id, status
        FROM social_posts
@@ -123,7 +123,7 @@ export const retryPost = async (req, res) => {
       return res.status(400).json({ error: 'postId is required', code: 'POST_ID_REQUIRED' });
     }
 
-    const { clause, params } = buildOwnershipClause({ isTeamMember, teamId, userId });
+    const { clause, params } = buildOwnershipClause({ isTeamMember, teamId, userId, startIndex: 2 });
     const lookup = await query(
       `SELECT id, status
        FROM social_posts
@@ -166,7 +166,7 @@ export const cancelScheduledPost = async (req, res) => {
       return res.status(400).json({ error: 'postId is required', code: 'POST_ID_REQUIRED' });
     }
 
-    const { clause, params } = buildOwnershipClause({ isTeamMember, teamId, userId });
+    const { clause, params } = buildOwnershipClause({ isTeamMember, teamId, userId, startIndex: 2 });
     const lookup = await query(
       `SELECT id, status
        FROM social_posts

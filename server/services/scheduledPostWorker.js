@@ -123,7 +123,7 @@ const markFailed = async (postId, errorMessage) => {
   });
 };
 
-const markPosted = async ({ postId, instagramPostId, youtubeVideoId, threadsPostId }) => {
+const markPosted = async ({ postId, instagramPostId, youtubeVideoId, threadsPostId, threadsSequence = null }) => {
   await query(
     `UPDATE social_posts
      SET status = 'posted',
@@ -131,9 +131,10 @@ const markPosted = async ({ postId, instagramPostId, youtubeVideoId, threadsPost
          instagram_post_id = COALESCE($2, instagram_post_id),
          youtube_video_id = COALESCE($3, youtube_video_id),
          threads_post_id = COALESCE($4, threads_post_id),
+         threads_sequence = COALESCE($5::jsonb, threads_sequence),
          updated_at = NOW()
      WHERE id = $1`,
-    [postId, instagramPostId, youtubeVideoId, threadsPostId]
+    [postId, instagramPostId, youtubeVideoId, threadsPostId, threadsSequence]
   );
 };
 
@@ -148,6 +149,7 @@ const publishScheduledPost = async (post) => {
   let instagramPostId = null;
   let youtubeVideoId = null;
   let threadsPostId = null;
+  let threadPostIds = [];
 
   for (const platform of platforms) {
     if (platform === 'instagram') {
@@ -192,6 +194,9 @@ const publishScheduledPost = async (post) => {
             posts,
           });
           threadsPostId = publishResult.publishId || null;
+          threadPostIds = Array.isArray(publishResult.threadPostIds)
+            ? publishResult.threadPostIds.map((id) => String(id || '').trim()).filter(Boolean)
+            : [];
         } else {
           const publishResult = await publishThreadsPost({
             accountId: account.account_id,
@@ -233,6 +238,7 @@ const publishScheduledPost = async (post) => {
     instagramPostId,
     youtubeVideoId,
     threadsPostId,
+    threadsSequence: threadPostIds.length > 0 ? JSON.stringify(threadPostIds) : null,
   });
 
   logger.info('Scheduled post published', {
