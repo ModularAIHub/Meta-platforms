@@ -3,6 +3,7 @@ import { History as HistoryIcon, Trash2, Instagram, Youtube, AtSign, CalendarDay
 import toast from 'react-hot-toast';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { postsApi } from '../utils/api';
+import { IS_THREADS_ONLY_MODE, THREADS_INVITE_MODE_NOTICE } from '../config/platformAvailability';
 
 const formatDate = (value) => {
   if (!value) return '--';
@@ -91,7 +92,7 @@ const HistoryPage = () => {
   const [posts, setPosts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('all');
-  const [platformFilter, setPlatformFilter] = useState('all');
+  const [platformFilter, setPlatformFilter] = useState(IS_THREADS_ONLY_MODE ? 'threads' : 'all');
   const [daysFilter, setDaysFilter] = useState(30);
   const [sort, setSort] = useState('newest');
   const [deletingId, setDeletingId] = useState(null);
@@ -188,8 +189,19 @@ const HistoryPage = () => {
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold text-gray-900">History</h1>
-        <p className="text-gray-600 mt-1">Posted and scheduled content across all platforms.</p>
+        <p className="text-gray-600 mt-1">
+          {IS_THREADS_ONLY_MODE
+            ? 'Posted and scheduled Threads content.'
+            : 'Posted and scheduled content across all platforms.'}
+        </p>
       </div>
+
+      {IS_THREADS_ONLY_MODE && (
+        <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-blue-800">
+          <p className="text-sm font-medium">Threads-only mode</p>
+          <p className="text-sm mt-1">{THREADS_INVITE_MODE_NOTICE}</p>
+        </div>
+      )}
 
       <div className="card space-y-4">
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
@@ -225,10 +237,10 @@ const HistoryPage = () => {
           </select>
 
           <select className="input" value={platformFilter} onChange={(event) => setPlatformFilter(event.target.value)}>
-            <option value="all">All Platforms</option>
-            <option value="instagram">Instagram</option>
+            <option value="all">{IS_THREADS_ONLY_MODE ? 'All (Threads)' : 'All Platforms'}</option>
+            {!IS_THREADS_ONLY_MODE && <option value="instagram">Instagram</option>}
             <option value="threads">Threads</option>
-            <option value="youtube">YouTube</option>
+            {!IS_THREADS_ONLY_MODE && <option value="youtube">YouTube</option>}
           </select>
 
           <select className="input" value={daysFilter} onChange={(event) => setDaysFilter(Number.parseInt(event.target.value, 10))}>

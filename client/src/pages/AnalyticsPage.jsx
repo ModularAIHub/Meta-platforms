@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { BarChart3, MessageCircle, Heart, Eye, Clock3, Users, AtSign } from 'lucide-react';
 import { analyticsApi } from '../utils/api';
 import LoadingSpinner from '../components/LoadingSpinner';
+import { IS_THREADS_ONLY_MODE, THREADS_INVITE_MODE_NOTICE } from '../config/platformAvailability';
 
 const MetricCard = ({ label, value, icon: Icon, tint = 'blue' }) => {
   const colorMap = {
@@ -95,8 +96,19 @@ const AnalyticsPage = () => {
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold text-gray-900">Analytics</h1>
-        <p className="text-gray-600 mt-1">Real aggregated stats from your saved platform posts.</p>
+        <p className="text-gray-600 mt-1">
+          {IS_THREADS_ONLY_MODE
+            ? 'Real aggregated stats from your saved Threads posts.'
+            : 'Real aggregated stats from your saved platform posts.'}
+        </p>
       </div>
+
+      {IS_THREADS_ONLY_MODE && (
+        <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-blue-800">
+          <p className="text-sm font-medium">Threads-only mode</p>
+          <p className="text-sm mt-1">{THREADS_INVITE_MODE_NOTICE}</p>
+        </div>
+      )}
 
       <div className="card">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
@@ -131,18 +143,20 @@ const AnalyticsPage = () => {
         </div>
       </div>
 
-      <section className="space-y-3">
-        <div className="flex items-center gap-2">
-          <BarChart3 className="h-5 w-5 text-pink-600" />
-          <h2 className="text-xl font-semibold text-gray-900">Instagram ({instagram.posts || 0} posts)</h2>
-        </div>
+      {!IS_THREADS_ONLY_MODE && (
+        <section className="space-y-3">
+          <div className="flex items-center gap-2">
+            <BarChart3 className="h-5 w-5 text-pink-600" />
+            <h2 className="text-xl font-semibold text-gray-900">Instagram ({instagram.posts || 0} posts)</h2>
+          </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <MetricCard label="Likes" value={instagram.likes} icon={Heart} tint="pink" />
-          <MetricCard label="Comments" value={instagram.comments} icon={MessageCircle} tint="blue" />
-          <MetricCard label="Reach" value={instagram.reach} icon={Eye} tint="green" />
-        </div>
-      </section>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <MetricCard label="Likes" value={instagram.likes} icon={Heart} tint="pink" />
+            <MetricCard label="Comments" value={instagram.comments} icon={MessageCircle} tint="blue" />
+            <MetricCard label="Reach" value={instagram.reach} icon={Eye} tint="green" />
+          </div>
+        </section>
+      )}
 
       <section className="space-y-3">
         <div className="flex items-center gap-2">
@@ -157,18 +171,20 @@ const AnalyticsPage = () => {
         </div>
       </section>
 
-      <section className="space-y-3">
-        <div className="flex items-center gap-2">
-          <BarChart3 className="h-5 w-5 text-red-600" />
-          <h2 className="text-xl font-semibold text-gray-900">YouTube ({youtube.posts || 0} posts)</h2>
-        </div>
+      {!IS_THREADS_ONLY_MODE && (
+        <section className="space-y-3">
+          <div className="flex items-center gap-2">
+            <BarChart3 className="h-5 w-5 text-red-600" />
+            <h2 className="text-xl font-semibold text-gray-900">YouTube ({youtube.posts || 0} posts)</h2>
+          </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <MetricCard label="Views" value={youtube.views} icon={Eye} tint="red" />
-          <MetricCard label="Watch Time (minutes)" value={youtube.watchTimeMinutes} icon={Clock3} tint="indigo" />
-          <MetricCard label="Subscribers Gained" value={youtube.subscribersGained} icon={Users} tint="green" />
-        </div>
-      </section>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <MetricCard label="Views" value={youtube.views} icon={Eye} tint="red" />
+            <MetricCard label="Watch Time (minutes)" value={youtube.watchTimeMinutes} icon={Clock3} tint="indigo" />
+            <MetricCard label="Subscribers Gained" value={youtube.subscribersGained} icon={Users} tint="green" />
+          </div>
+        </section>
+      )}
     </div>
   );
 };

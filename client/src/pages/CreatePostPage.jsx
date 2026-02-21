@@ -14,6 +14,12 @@ import {
 import toast from 'react-hot-toast';
 import { aiApi, mediaApi, postsApi } from '../utils/api';
 import { useAccounts } from '../contexts/AccountContext';
+import {
+  ENABLED_SOCIAL_PLATFORMS,
+  IS_THREADS_ONLY_MODE,
+  THREADS_INVITE_MODE_NOTICE,
+  isSocialPlatformEnabled,
+} from '../config/platformAvailability';
 
 const platformLabel = {
   instagram: 'Instagram',
@@ -26,6 +32,11 @@ const PLATFORM_CAPTION_LIMITS = {
   threads: 500,
   youtube: 5000,
 };
+
+const DEFAULT_PLATFORM_SELECTION = ENABLED_SOCIAL_PLATFORMS.reduce((accumulator, platform) => {
+  accumulator[platform] = false;
+  return accumulator;
+}, {});
 
 const THREADS_POST_MAX_CHARS = 500;
 const THREADS_AUTO_SPLIT_MAX_CHARS = 10000;
@@ -109,11 +120,7 @@ const CreatePostPage = () => {
   const [checkingPreflight, setCheckingPreflight] = useState(false);
   const [preflightIssues, setPreflightIssues] = useState([]);
 
-  const [selectedPlatforms, setSelectedPlatforms] = useState({
-    instagram: false,
-    youtube: false,
-    threads: false,
-  });
+  const [selectedPlatforms, setSelectedPlatforms] = useState(DEFAULT_PLATFORM_SELECTION);
 
   const [instagramType, setInstagramType] = useState('feed');
   const [youtubeType, setYoutubeType] = useState('video');
@@ -135,11 +142,7 @@ const CreatePostPage = () => {
         return prev;
       }
 
-      const next = {
-        instagram: false,
-        youtube: false,
-        threads: false,
-      };
+      const next = { ...DEFAULT_PLATFORM_SELECTION };
 
       for (const account of accounts) {
         const platform = String(account?.platform || '').toLowerCase();
@@ -234,6 +237,11 @@ const CreatePostPage = () => {
   ]);
 
   const handlePlatformToggle = (platform) => {
+    if (!isSocialPlatformEnabled(platform)) {
+      toast.error('This platform is not available in production yet.');
+      return;
+    }
+
     setSelectedPlatforms((prev) => ({
       ...prev,
       [platform]: !prev[platform],
@@ -298,7 +306,7 @@ Rules:
 
       const response = await aiApi.generateCaption({
         prompt: requestPrompt,
-        platforms: isThreadsThread ? ['instagram'] : activePlatforms,
+        platforms: isThreadsThread ? ['threads'] : activePlatforms,
       });
 
       const generated = response.data?.caption || '';
@@ -490,8 +498,19 @@ Rules:
     <div className="max-w-5xl space-y-6">
       <div>
         <h1 className="text-3xl font-bold text-gray-900">Create Post</h1>
-        <p className="text-gray-600 mt-1">Simple flow: choose platforms, write, upload, publish.</p>
+        <p className="text-gray-600 mt-1">
+          {IS_THREADS_ONLY_MODE
+            ? 'Threads-focused flow: choose account, write, upload, publish.'
+            : 'Simple flow: choose platforms, write, upload, publish.'}
+        </p>
       </div>
+
+      {IS_THREADS_ONLY_MODE && (
+        <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-blue-800">
+          <p className="text-sm font-medium">Threads-only mode</p>
+          <p className="text-sm mt-1">{THREADS_INVITE_MODE_NOTICE}</p>
+        </div>
+      )}
 
       <div className="card space-y-4">
         <div className="flex items-center justify-between gap-3">
@@ -499,24 +518,26 @@ Rules:
           <p className="text-xs text-gray-500">Cross-post is automatic when multiple are selected.</p>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-          <label
-            className={`flex items-center justify-between rounded-lg border px-3 py-2 cursor-pointer ${
-              selectedPlatforms.instagram
-                ? 'border-blue-300 bg-blue-50'
-                : 'border-gray-200 bg-white'
-            }`}
-          >
-            <span className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
-              <Instagram className="h-4 w-4 text-pink-600" />
-              Instagram
-            </span>
-            <input
-              type="checkbox"
-              checked={selectedPlatforms.instagram}
-              onChange={() => handlePlatformToggle('instagram')}
-            />
-          </label>
+        <div className={`grid grid-cols-1 ${IS_THREADS_ONLY_MODE ? 'sm:grid-cols-1' : 'sm:grid-cols-3'} gap-2`}>
+          {!IS_THREADS_ONLY_MODE && (
+            <label
+              className={`flex items-center justify-between rounded-lg border px-3 py-2 cursor-pointer ${
+                selectedPlatforms.instagram
+                  ? 'border-blue-300 bg-blue-50'
+                  : 'border-gray-200 bg-white'
+              }`}
+            >
+              <span className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
+                <Instagram className="h-4 w-4 text-pink-600" />
+                Instagram
+              </span>
+              <input
+                type="checkbox"
+                checked={Boolean(selectedPlatforms.instagram)}
+                onChange={() => handlePlatformToggle('instagram')}
+              />
+            </label>
+          )}
 
           <label
             className={`flex items-center justify-between rounded-lg border px-3 py-2 cursor-pointer ${
@@ -531,28 +552,30 @@ Rules:
             </span>
             <input
               type="checkbox"
-              checked={selectedPlatforms.threads}
+              checked={Boolean(selectedPlatforms.threads)}
               onChange={() => handlePlatformToggle('threads')}
             />
           </label>
 
-          <label
-            className={`flex items-center justify-between rounded-lg border px-3 py-2 cursor-pointer ${
-              selectedPlatforms.youtube
-                ? 'border-blue-300 bg-blue-50'
-                : 'border-gray-200 bg-white'
-            }`}
-          >
-            <span className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
-              <Youtube className="h-4 w-4 text-red-600" />
-              YouTube
-            </span>
-            <input
-              type="checkbox"
-              checked={selectedPlatforms.youtube}
-              onChange={() => handlePlatformToggle('youtube')}
-            />
-          </label>
+          {!IS_THREADS_ONLY_MODE && (
+            <label
+              className={`flex items-center justify-between rounded-lg border px-3 py-2 cursor-pointer ${
+                selectedPlatforms.youtube
+                  ? 'border-blue-300 bg-blue-50'
+                  : 'border-gray-200 bg-white'
+              }`}
+            >
+              <span className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
+                <Youtube className="h-4 w-4 text-red-600" />
+                YouTube
+              </span>
+              <input
+                type="checkbox"
+                checked={Boolean(selectedPlatforms.youtube)}
+                onChange={() => handlePlatformToggle('youtube')}
+              />
+            </label>
+          )}
         </div>
 
         {disconnectedPlatforms.length > 0 && (

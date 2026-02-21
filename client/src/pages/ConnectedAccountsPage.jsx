@@ -1,8 +1,13 @@
-﻿import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Instagram, Youtube, AtSign, Link2, Unlink, ShieldAlert } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { accountsApi, oauthApi } from '../utils/api';
 import { useAccounts } from '../contexts/AccountContext';
+import {
+  IS_THREADS_ONLY_MODE,
+  THREADS_INVITE_MODE_NOTICE,
+  isSocialPlatformEnabled,
+} from '../config/platformAvailability';
 
 const PlatformIcon = ({ platform }) => {
   if (platform === 'instagram') {
@@ -44,14 +49,31 @@ const ConnectedAccountsPage = () => {
   }, [refreshAccounts]);
 
   const activeCounts = useMemo(() => {
+    const sourceAccounts = IS_THREADS_ONLY_MODE
+      ? accounts.filter((account) => account.platform === 'threads')
+      : accounts;
+
     return {
-      instagram: accounts.filter((account) => account.platform === 'instagram').length,
-      youtube: accounts.filter((account) => account.platform === 'youtube').length,
-      threads: accounts.filter((account) => account.platform === 'threads').length,
+      instagram: sourceAccounts.filter((account) => account.platform === 'instagram').length,
+      youtube: sourceAccounts.filter((account) => account.platform === 'youtube').length,
+      threads: sourceAccounts.filter((account) => account.platform === 'threads').length,
     };
   }, [accounts]);
 
+  const visibleAccounts = useMemo(
+    () =>
+      IS_THREADS_ONLY_MODE
+        ? accounts.filter((account) => account.platform === 'threads')
+        : accounts,
+    [accounts]
+  );
+
   const connectPlatform = (platform) => {
+    if (!isSocialPlatformEnabled(platform)) {
+      toast.error('This platform is not available in production yet.');
+      return;
+    }
+
     const returnUrl = `${window.location.origin}/accounts`;
     const connectUrl = oauthApi.connectUrl(platform, returnUrl);
     window.location.href = connectUrl;
@@ -137,8 +159,21 @@ const ConnectedAccountsPage = () => {
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold text-gray-900">Connected Accounts</h1>
-        <p className="text-gray-600 mt-1">Connect and manage Instagram + Threads + YouTube accounts.</p>
+        <p className="text-gray-600 mt-1">
+          {IS_THREADS_ONLY_MODE
+            ? 'Connect and manage Threads accounts.'
+            : 'Connect and manage Instagram + Threads + YouTube accounts.'}
+        </p>
       </div>
+
+      {IS_THREADS_ONLY_MODE && (
+        <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-blue-800">
+          <p className="text-sm font-medium">Threads-only mode</p>
+          <p className="text-sm mt-1">
+            {THREADS_INVITE_MODE_NOTICE} Instagram and YouTube will be enabled after review approval.
+          </p>
+        </div>
+      )}
 
       {!canManageConnections && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-800">
@@ -150,8 +185,9 @@ const ConnectedAccountsPage = () => {
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="card">
+      <div className={`grid grid-cols-1 ${IS_THREADS_ONLY_MODE ? 'md:grid-cols-1' : 'md:grid-cols-3'} gap-4`}>
+        {!IS_THREADS_ONLY_MODE && (
+          <div className="card">
           <div className="flex items-center justify-between">
             <div className="inline-flex items-center gap-2 font-semibold text-gray-900">
               <Instagram className="h-5 w-5 text-pink-600" />
@@ -216,7 +252,8 @@ const ConnectedAccountsPage = () => {
               {connectingByok ? 'Connecting...' : 'Connect With Token'}
             </button>
           </div>
-        </div>
+          </div>
+        )}
 
         <div className="card">
           <div className="flex items-center justify-between">
@@ -238,11 +275,14 @@ const ConnectedAccountsPage = () => {
           </button>
 
           <p className="text-xs text-gray-600 mt-4">
-            Uses one-click Threads OAuth. Configure `THREADS_APP_ID/THREADS_APP_SECRET` (or reuse Instagram keys).
+            {IS_THREADS_ONLY_MODE
+              ? `${THREADS_INVITE_MODE_NOTICE} Use one-click Threads OAuth if your app is approved/invited.`
+              : 'Uses one-click Threads OAuth. Configure `THREADS_APP_ID/THREADS_APP_SECRET` (or reuse Instagram keys).'}
           </p>
         </div>
 
-        <div className="card">
+        {!IS_THREADS_ONLY_MODE && (
+          <div className="card">
           <div className="flex items-center justify-between">
             <div className="inline-flex items-center gap-2 font-semibold text-gray-900">
               <Youtube className="h-5 w-5 text-red-600" />
@@ -260,7 +300,8 @@ const ConnectedAccountsPage = () => {
             <Link2 className="h-4 w-4 mr-2" />
             Connect YouTube
           </button>
-        </div>
+          </div>
+        )}
       </div>
 
       <div className="card">
@@ -268,11 +309,11 @@ const ConnectedAccountsPage = () => {
 
         {loading ? (
           <p className="text-sm text-gray-500">Loading accounts...</p>
-        ) : accounts.length === 0 ? (
+        ) : visibleAccounts.length === 0 ? (
           <p className="text-sm text-gray-500">No connected accounts yet.</p>
         ) : (
           <div className="space-y-3">
-            {accounts.map((account) => {
+            {visibleAccounts.map((account) => {
               const expiry = getExpiryMeta(account.token_expires_at);
 
               return (

@@ -1,9 +1,14 @@
-﻿import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { BarChart3, Heart, Users, Video, Instagram, Youtube, AtSign, Link2, ShieldAlert, Wallet } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { dashboardApi, oauthApi } from '../utils/api';
 import { useAccounts } from '../contexts/AccountContext';
 import LoadingSpinner from '../components/LoadingSpinner';
+import {
+  IS_THREADS_ONLY_MODE,
+  THREADS_INVITE_MODE_NOTICE,
+  isSocialPlatformEnabled,
+} from '../config/platformAvailability';
 
 const formatDateTime = (value) => {
   if (!value) return '--';
@@ -50,8 +55,20 @@ const DashboardPage = () => {
   const [loading, setLoading] = useState(true);
 
   const canManageConnections = Boolean(permissions?.canManageConnections);
+  const visibleAccounts = useMemo(
+    () =>
+      IS_THREADS_ONLY_MODE
+        ? accounts.filter((account) => account.platform === 'threads')
+        : accounts,
+    [accounts]
+  );
 
   const connectPlatform = (platform) => {
+    if (!isSocialPlatformEnabled(platform)) {
+      toast.error('This platform is not available in production yet.');
+      return;
+    }
+
     const returnUrl = `${window.location.origin}/dashboard`;
     const connectUrl = oauthApi.connectUrl(platform, returnUrl);
     window.location.href = connectUrl;
@@ -124,9 +141,18 @@ const DashboardPage = () => {
       <div>
         <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
         <p className="text-gray-600 mt-1">
-          Connected Instagram + Threads + YouTube accounts, post activity, and engagement snapshot.
+          {IS_THREADS_ONLY_MODE
+            ? 'Threads account overview, post activity, and engagement snapshot.'
+            : 'Connected Instagram + Threads + YouTube accounts, post activity, and engagement snapshot.'}
         </p>
       </div>
+
+      {IS_THREADS_ONLY_MODE && (
+        <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-blue-800">
+          <p className="text-sm font-medium">Threads-only mode</p>
+          <p className="text-sm mt-1">{THREADS_INVITE_MODE_NOTICE}</p>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
         <div className="card">
@@ -180,41 +206,55 @@ const DashboardPage = () => {
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         <div className="card xl:col-span-1">
           <h2 className="text-lg font-semibold text-gray-900">Connected Accounts</h2>
-          <p className="text-sm text-gray-500 mb-4">{accounts.length} account(s) active</p>
+          <p className="text-sm text-gray-500 mb-4">{visibleAccounts.length} account(s) active</p>
 
-          {accounts.length === 0 ? (
+          {visibleAccounts.length === 0 ? (
             <div className="space-y-3">
               <p className="text-sm text-gray-500">No accounts connected yet.</p>
 
-              <button
-                type="button"
-                className="btn btn-primary h-9 px-3"
-                onClick={() => connectPlatform('instagram')}
-                disabled={!canManageConnections}
-              >
-                <Link2 className="h-4 w-4 mr-2" />
-                Connect Instagram
-              </button>
+              {IS_THREADS_ONLY_MODE ? (
+                <button
+                  type="button"
+                  className="btn btn-primary h-9 px-3"
+                  onClick={() => connectPlatform('threads')}
+                  disabled={!canManageConnections}
+                >
+                  <Link2 className="h-4 w-4 mr-2" />
+                  Connect Threads
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="btn btn-primary h-9 px-3"
+                    onClick={() => connectPlatform('instagram')}
+                    disabled={!canManageConnections}
+                  >
+                    <Link2 className="h-4 w-4 mr-2" />
+                    Connect Instagram
+                  </button>
 
-              <button
-                type="button"
-                className="btn h-9 px-3 border border-gray-300 text-gray-700 hover:bg-gray-50"
-                onClick={() => connectPlatform('threads')}
-                disabled={!canManageConnections}
-              >
-                <Link2 className="h-4 w-4 mr-2" />
-                Connect Threads
-              </button>
+                  <button
+                    type="button"
+                    className="btn h-9 px-3 border border-gray-300 text-gray-700 hover:bg-gray-50"
+                    onClick={() => connectPlatform('threads')}
+                    disabled={!canManageConnections}
+                  >
+                    <Link2 className="h-4 w-4 mr-2" />
+                    Connect Threads
+                  </button>
 
-              <button
-                type="button"
-                className="btn h-9 px-3 border border-gray-300 text-gray-700 hover:bg-gray-50"
-                onClick={() => connectPlatform('youtube')}
-                disabled={!canManageConnections}
-              >
-                <Link2 className="h-4 w-4 mr-2" />
-                Connect YouTube
-              </button>
+                  <button
+                    type="button"
+                    className="btn h-9 px-3 border border-gray-300 text-gray-700 hover:bg-gray-50"
+                    onClick={() => connectPlatform('youtube')}
+                    disabled={!canManageConnections}
+                  >
+                    <Link2 className="h-4 w-4 mr-2" />
+                    Connect YouTube
+                  </button>
+                </>
+              )}
 
               {!canManageConnections && (
                 <div className="inline-flex items-center gap-1 text-xs text-amber-700">
@@ -225,7 +265,7 @@ const DashboardPage = () => {
             </div>
           ) : (
             <div className="space-y-3">
-              {accounts.map((account) => (
+              {visibleAccounts.map((account) => (
                 <div key={account.id} className="rounded-lg border border-gray-200 p-3">
                   <div className="flex items-center justify-between">
                     <p className="font-medium text-gray-900">{account.account_display_name || account.account_username}</p>
