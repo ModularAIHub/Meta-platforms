@@ -55,13 +55,9 @@ const DashboardPage = () => {
   const [loading, setLoading] = useState(true);
 
   const canManageConnections = Boolean(permissions?.canManageConnections);
-  const visibleAccounts = useMemo(
-    () =>
-      IS_THREADS_ONLY_MODE
-        ? accounts.filter((account) => account.platform === 'threads')
-        : accounts,
-    [accounts]
-  );
+  const visibleAccounts = useMemo(() => accounts, [accounts]);
+  const instagramLocked = IS_THREADS_ONLY_MODE && !isSocialPlatformEnabled('instagram');
+  const youtubeLocked = IS_THREADS_ONLY_MODE && !isSocialPlatformEnabled('youtube');
 
   const connectPlatform = (platform) => {
     if (!isSocialPlatformEnabled(platform)) {
@@ -150,7 +146,9 @@ const DashboardPage = () => {
       {IS_THREADS_ONLY_MODE && (
         <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-blue-800">
           <p className="text-sm font-medium">Threads-only mode</p>
-          <p className="text-sm mt-1">{THREADS_INVITE_MODE_NOTICE}</p>
+          <p className="text-sm mt-1">
+            {THREADS_INVITE_MODE_NOTICE} Instagram and YouTube are visible but locked in production for now.
+          </p>
         </div>
       )}
 
@@ -212,48 +210,48 @@ const DashboardPage = () => {
             <div className="space-y-3">
               <p className="text-sm text-gray-500">No accounts connected yet.</p>
 
-              {IS_THREADS_ONLY_MODE ? (
-                <button
-                  type="button"
-                  className="btn btn-primary h-9 px-3"
-                  onClick={() => connectPlatform('threads')}
-                  disabled={!canManageConnections}
-                >
-                  <Link2 className="h-4 w-4 mr-2" />
-                  Connect Threads
-                </button>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    className="btn btn-primary h-9 px-3"
-                    onClick={() => connectPlatform('instagram')}
-                    disabled={!canManageConnections}
-                  >
-                    <Link2 className="h-4 w-4 mr-2" />
-                    Connect Instagram
-                  </button>
+              <button
+                type="button"
+                className={`btn h-9 px-3 ${
+                  instagramLocked
+                    ? 'border border-gray-300 bg-gray-100 text-gray-500'
+                    : 'btn-primary'
+                }`}
+                onClick={() => connectPlatform('instagram')}
+                disabled={!canManageConnections || instagramLocked}
+              >
+                <Link2 className="h-4 w-4 mr-2" />
+                {instagramLocked ? 'Instagram Locked' : 'Connect Instagram'}
+              </button>
 
-                  <button
-                    type="button"
-                    className="btn h-9 px-3 border border-gray-300 text-gray-700 hover:bg-gray-50"
-                    onClick={() => connectPlatform('threads')}
-                    disabled={!canManageConnections}
-                  >
-                    <Link2 className="h-4 w-4 mr-2" />
-                    Connect Threads
-                  </button>
+              <button
+                type="button"
+                className="btn h-9 px-3 border border-gray-300 text-gray-700 hover:bg-gray-50"
+                onClick={() => connectPlatform('threads')}
+                disabled={!canManageConnections}
+              >
+                <Link2 className="h-4 w-4 mr-2" />
+                Connect Threads
+              </button>
 
-                  <button
-                    type="button"
-                    className="btn h-9 px-3 border border-gray-300 text-gray-700 hover:bg-gray-50"
-                    onClick={() => connectPlatform('youtube')}
-                    disabled={!canManageConnections}
-                  >
-                    <Link2 className="h-4 w-4 mr-2" />
-                    Connect YouTube
-                  </button>
-                </>
+              <button
+                type="button"
+                className={`btn h-9 px-3 ${
+                  youtubeLocked
+                    ? 'border border-gray-300 bg-gray-100 text-gray-500'
+                    : 'border border-gray-300 text-gray-700 hover:bg-gray-50'
+                }`}
+                onClick={() => connectPlatform('youtube')}
+                disabled={!canManageConnections || youtubeLocked}
+              >
+                <Link2 className="h-4 w-4 mr-2" />
+                {youtubeLocked ? 'YouTube Locked' : 'Connect YouTube'}
+              </button>
+
+              {IS_THREADS_ONLY_MODE && (
+                <p className="text-xs text-gray-500">
+                  Instagram and YouTube are visible here but locked in production while review is pending.
+                </p>
               )}
 
               {!canManageConnections && (

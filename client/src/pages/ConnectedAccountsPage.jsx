@@ -49,24 +49,16 @@ const ConnectedAccountsPage = () => {
   }, [refreshAccounts]);
 
   const activeCounts = useMemo(() => {
-    const sourceAccounts = IS_THREADS_ONLY_MODE
-      ? accounts.filter((account) => account.platform === 'threads')
-      : accounts;
-
     return {
-      instagram: sourceAccounts.filter((account) => account.platform === 'instagram').length,
-      youtube: sourceAccounts.filter((account) => account.platform === 'youtube').length,
-      threads: sourceAccounts.filter((account) => account.platform === 'threads').length,
+      instagram: accounts.filter((account) => account.platform === 'instagram').length,
+      youtube: accounts.filter((account) => account.platform === 'youtube').length,
+      threads: accounts.filter((account) => account.platform === 'threads').length,
     };
   }, [accounts]);
 
-  const visibleAccounts = useMemo(
-    () =>
-      IS_THREADS_ONLY_MODE
-        ? accounts.filter((account) => account.platform === 'threads')
-        : accounts,
-    [accounts]
-  );
+  const visibleAccounts = useMemo(() => accounts, [accounts]);
+  const instagramLocked = IS_THREADS_ONLY_MODE && !isSocialPlatformEnabled('instagram');
+  const youtubeLocked = IS_THREADS_ONLY_MODE && !isSocialPlatformEnabled('youtube');
 
   const connectPlatform = (platform) => {
     if (!isSocialPlatformEnabled(platform)) {
@@ -159,18 +151,14 @@ const ConnectedAccountsPage = () => {
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold text-gray-900">Connected Accounts</h1>
-        <p className="text-gray-600 mt-1">
-          {IS_THREADS_ONLY_MODE
-            ? 'Connect and manage Threads accounts.'
-            : 'Connect and manage Instagram + Threads + YouTube accounts.'}
-        </p>
+        <p className="text-gray-600 mt-1">Connect and manage Instagram + Threads + YouTube accounts.</p>
       </div>
 
       {IS_THREADS_ONLY_MODE && (
         <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-blue-800">
           <p className="text-sm font-medium">Threads-only mode</p>
           <p className="text-sm mt-1">
-            {THREADS_INVITE_MODE_NOTICE} Instagram and YouTube will be enabled after review approval.
+            {THREADS_INVITE_MODE_NOTICE} Instagram and YouTube are visible but locked in production for now.
           </p>
         </div>
       )}
@@ -185,9 +173,8 @@ const ConnectedAccountsPage = () => {
         </div>
       )}
 
-      <div className={`grid grid-cols-1 ${IS_THREADS_ONLY_MODE ? 'md:grid-cols-1' : 'md:grid-cols-3'} gap-4`}>
-        {!IS_THREADS_ONLY_MODE && (
-          <div className="card">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className={`card ${instagramLocked ? 'opacity-80' : ''}`}>
           <div className="flex items-center justify-between">
             <div className="inline-flex items-center gap-2 font-semibold text-gray-900">
               <Instagram className="h-5 w-5 text-pink-600" />
@@ -199,61 +186,70 @@ const ConnectedAccountsPage = () => {
           <button
             type="button"
             onClick={() => connectPlatform('instagram')}
-            disabled={!canManageConnections}
-            className="btn btn-primary mt-4 h-10 px-4"
+            disabled={!canManageConnections || instagramLocked}
+            className={`btn mt-4 h-10 px-4 ${
+              instagramLocked
+                ? 'border border-gray-300 bg-gray-100 text-gray-500'
+                : 'btn-primary'
+            }`}
           >
             <Link2 className="h-4 w-4 mr-2" />
             Connect Instagram
           </button>
 
-          <div className="mt-4 border-t border-gray-200 pt-4 space-y-2">
-            <p className="text-xs text-gray-600">
-              Local-dev fallback: paste your own token from{' '}
-              <a
-                href="https://developers.facebook.com/tools/explorer"
-                target="_blank"
-                rel="noreferrer"
-                className="text-blue-600 underline"
-              >
-                Meta Graph API Explorer
-              </a>
-              .
+          {instagramLocked ? (
+            <p className="text-xs text-gray-600 mt-4">
+              Locked in production. Available in development and after app review approval.
             </p>
-            <input
-              type="password"
-              className="input"
-              placeholder="Instagram access token"
-              value={instagramByokToken}
-              onChange={(event) => setInstagramByokToken(event.target.value)}
-              disabled={!canManageConnections || connectingByok}
-            />
-            <input
-              type="text"
-              className="input"
-              placeholder="Instagram Business Account ID"
-              value={instagramByokAccountId}
-              onChange={(event) => setInstagramByokAccountId(event.target.value)}
-              disabled={!canManageConnections || connectingByok}
-            />
-            <input
-              type="text"
-              className="input"
-              placeholder="Facebook Page ID (optional)"
-              value={instagramByokPageId}
-              onChange={(event) => setInstagramByokPageId(event.target.value)}
-              disabled={!canManageConnections || connectingByok}
-            />
-            <button
-              type="button"
-              onClick={connectInstagramByok}
-              disabled={!canManageConnections || connectingByok}
-              className="btn btn-primary h-10 px-4"
-            >
-              {connectingByok ? 'Connecting...' : 'Connect With Token'}
-            </button>
-          </div>
-          </div>
-        )}
+          ) : (
+            <div className="mt-4 border-t border-gray-200 pt-4 space-y-2">
+              <p className="text-xs text-gray-600">
+                Local-dev fallback: paste your own token from{' '}
+                <a
+                  href="https://developers.facebook.com/tools/explorer"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-blue-600 underline"
+                >
+                  Meta Graph API Explorer
+                </a>
+                .
+              </p>
+              <input
+                type="password"
+                className="input"
+                placeholder="Instagram access token"
+                value={instagramByokToken}
+                onChange={(event) => setInstagramByokToken(event.target.value)}
+                disabled={!canManageConnections || connectingByok}
+              />
+              <input
+                type="text"
+                className="input"
+                placeholder="Instagram Business Account ID"
+                value={instagramByokAccountId}
+                onChange={(event) => setInstagramByokAccountId(event.target.value)}
+                disabled={!canManageConnections || connectingByok}
+              />
+              <input
+                type="text"
+                className="input"
+                placeholder="Facebook Page ID (optional)"
+                value={instagramByokPageId}
+                onChange={(event) => setInstagramByokPageId(event.target.value)}
+                disabled={!canManageConnections || connectingByok}
+              />
+              <button
+                type="button"
+                onClick={connectInstagramByok}
+                disabled={!canManageConnections || connectingByok}
+                className="btn btn-primary h-10 px-4"
+              >
+                {connectingByok ? 'Connecting...' : 'Connect With Token'}
+              </button>
+            </div>
+          )}
+        </div>
 
         <div className="card">
           <div className="flex items-center justify-between">
@@ -281,8 +277,7 @@ const ConnectedAccountsPage = () => {
           </p>
         </div>
 
-        {!IS_THREADS_ONLY_MODE && (
-          <div className="card">
+        <div className={`card ${youtubeLocked ? 'opacity-80' : ''}`}>
           <div className="flex items-center justify-between">
             <div className="inline-flex items-center gap-2 font-semibold text-gray-900">
               <Youtube className="h-5 w-5 text-red-600" />
@@ -294,14 +289,22 @@ const ConnectedAccountsPage = () => {
           <button
             type="button"
             onClick={() => connectPlatform('youtube')}
-            disabled={!canManageConnections}
-            className="btn btn-primary mt-4 h-10 px-4"
+            disabled={!canManageConnections || youtubeLocked}
+            className={`btn mt-4 h-10 px-4 ${
+              youtubeLocked
+                ? 'border border-gray-300 bg-gray-100 text-gray-500'
+                : 'btn-primary'
+            }`}
           >
             <Link2 className="h-4 w-4 mr-2" />
             Connect YouTube
           </button>
-          </div>
-        )}
+          {youtubeLocked && (
+            <p className="text-xs text-gray-600 mt-4">
+              Locked in production. Available in development and after app review approval.
+            </p>
+          )}
+        </div>
       </div>
 
       <div className="card">
