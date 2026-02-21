@@ -1,7 +1,7 @@
 {
-  "name": "social-genie",
+  "name": "meta-genie",
   "version": "1.0.0",
-  "description": "Combined Instagram + YouTube management module for SuiteGenie",
+  "description": "Combined Instagram + YouTube + Threads management module for SuiteGenie",
   "main": "server/index.js",
   "type": "module",
   "scripts": {

@@ -2,7 +2,7 @@ import axios from 'axios';
 import { buildPlatformLoginUrl } from './platformUrl';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3006';
-const AUTH_REDIRECT_STORAGE_KEY = 'social_genie_auth_redirect_time';
+const AUTH_REDIRECT_STORAGE_KEY = 'meta_genie_auth_redirect_time';
 const REDIRECT_COOLDOWN_MS = 2000;
 const NON_REFRESHABLE_AUTH_PATHS = ['/auth/refresh', '/auth/logout', '/auth/callback'];
 const TEAM_CONTEXT_STORAGE_KEY = 'activeTeamContext';

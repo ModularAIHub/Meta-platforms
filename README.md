@@ -1,7 +1,7 @@
-# Social Genie
+# Meta Genie
 
-Social Genie is a combined Instagram + YouTube module for SuiteGenie.
-It also supports Threads posting and account connection.
+Meta Genie is a combined Instagram + YouTube + Threads module for SuiteGenie.
+It supports Threads, Instagram, and YouTube posting and account connection.
 
 ## Structure
 
@@ -29,7 +29,7 @@ Threads OAuth supports dedicated keys:
 - `THREADS_APP_ID`
 - `THREADS_APP_SECRET`
 
-If these are empty, Social Genie falls back to:
+If these are empty, Meta Genie falls back to:
 
 - `INSTAGRAM_APP_ID`
 - `INSTAGRAM_APP_SECRET`

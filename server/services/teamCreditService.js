@@ -26,7 +26,7 @@ const insertTeamTransaction = async (client, { userId, teamId, type, creditsAmou
   try {
     await client.query(
       `INSERT INTO credit_transactions (id, user_id, type, credits_amount, description, service_name, team_id, created_at)
-       VALUES ($1, $2, $3, $4, $5, 'social-genie', $6, CURRENT_TIMESTAMP)`,
+       VALUES ($1, $2, $3, $4, $5, 'meta-genie', $6, CURRENT_TIMESTAMP)`,
       [transactionId, userId, type, signedAmount, description, teamId]
     );
   } catch (error) {
@@ -36,7 +36,7 @@ const insertTeamTransaction = async (client, { userId, teamId, type, creditsAmou
 
     await client.query(
       `INSERT INTO credit_transactions (id, user_id, type, credits_amount, description, service_name, created_at)
-       VALUES ($1, $2, $3, $4, $5, 'social-genie', CURRENT_TIMESTAMP)`,
+       VALUES ($1, $2, $3, $4, $5, 'meta-genie', CURRENT_TIMESTAMP)`,
       [transactionId, userId, type, signedAmount, `[team:${teamId}] ${description}`]
     );
   }

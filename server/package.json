@@ -1,7 +1,7 @@
 {
-  "name": "social-genie-server",
+  "name": "meta-genie-server",
   "version": "1.0.0",
-  "description": "Social Genie backend server",
+  "description": "Meta Genie backend server",
   "main": "index.js",
   "type": "module",
   "scripts": {

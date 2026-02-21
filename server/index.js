@@ -89,7 +89,7 @@ app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
 app.get('/health', (_req, res) => {
-  res.status(200).json({ status: 'OK', service: 'Social Genie' });
+  res.status(200).json({ status: 'OK', service: 'Meta Genie' });
 });
 
 app.get('/api/csrf-token', (_req, res) => {
@@ -114,7 +114,7 @@ app.use('/api/credits', creditsRoutes);
 
 app.get('/', (_req, res) => {
   res.json({
-    service: 'Social Genie API',
+    service: 'Meta Genie API',
     status: 'running',
     timestamp: new Date().toISOString(),
   });
@@ -142,7 +142,7 @@ const start = async () => {
   startScheduledPostWorker();
 
   app.listen(PORT, () => {
-    logger.info(`Social Genie server running on port ${PORT}`);
+    logger.info(`Meta Genie server running on port ${PORT}`);
   });
 };
 

@@ -3,7 +3,7 @@ import { authApi } from '../utils/api';
 import { buildPlatformLoginUrl } from '../utils/platformUrl';
 
 const AuthContext = createContext(null);
-const AUTH_REDIRECT_STORAGE_KEY = 'social_genie_auth_redirect_time';
+const AUTH_REDIRECT_STORAGE_KEY = 'meta_genie_auth_redirect_time';
 const REDIRECT_COOLDOWN_MS = 2000;
 
 export const useAuth = () => {

@@ -164,7 +164,7 @@ const openMediaSource = async (mediaUrl) => {
 };
 
 const parseTitle = (caption) => {
-  const fallback = 'Social Genie Upload';
+  const fallback = 'Meta Genie Upload';
   const raw = String(caption || '').trim();
   if (!raw) return fallback;
 

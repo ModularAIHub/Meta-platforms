@@ -1,7 +1,7 @@
 {
-  "name": "social-genie-client",
+  "name": "meta-genie-client",
   "version": "1.0.0",
-  "description": "Social Genie React frontend",
+  "description": "Meta Genie React frontend",
   "type": "module",
   "scripts": {
     "dev": "vite",

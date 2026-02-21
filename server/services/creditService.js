@@ -214,7 +214,7 @@ class CreditService {
       const transactionId = uuidv4();
       await client.query(
         `INSERT INTO credit_transactions (id, user_id, type, credits_amount, description, service_name, created_at)
-         VALUES ($1, $2, 'usage', $3, $4, 'social-genie', CURRENT_TIMESTAMP)`,
+         VALUES ($1, $2, 'usage', $3, $4, 'meta-genie', CURRENT_TIMESTAMP)`,
         [transactionId, userId, -roundedAmount, description || `${operation} - ${roundedAmount} credits deducted`]
       );
 
@@ -308,7 +308,7 @@ class CreditService {
       const transactionId = uuidv4();
       await client.query(
         `INSERT INTO credit_transactions (id, user_id, type, credits_amount, description, service_name, created_at)
-         VALUES ($1, $2, 'refund', $3, $4, 'social-genie', CURRENT_TIMESTAMP)`,
+         VALUES ($1, $2, 'refund', $3, $4, 'meta-genie', CURRENT_TIMESTAMP)`,
         [transactionId, userId, roundedAmount, description || `${operation} - ${roundedAmount} credits refunded`]
       );
 
