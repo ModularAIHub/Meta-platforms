@@ -9,6 +9,7 @@ import { fileURLToPath } from 'url';
 import authRoutes from './routes/auth.js';
 import oauthRoutes from './routes/oauth.js';
 import threadsRoutes from './routes/threads.js';
+import internalThreadsRoutes from './routes/internalThreads.js';
 import accountsRoutes from './routes/accounts.js';
 import postsRoutes from './routes/posts.js';
 import dashboardRoutes from './routes/dashboard.js';
@@ -101,6 +102,7 @@ app.use('/uploads', express.static(path.resolve(__dirname, 'uploads')));
 app.use('/auth', authRoutes);
 app.use('/api/oauth', oauthRoutes);
 app.use('/api/threads', threadsRoutes);
+app.use('/api/internal/threads', internalThreadsRoutes);
 
 app.use('/api', requirePlatformLogin, resolveTeamContextMiddleware);
 app.use('/api/accounts', accountsRoutes);
