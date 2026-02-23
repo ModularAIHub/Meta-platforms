@@ -4,17 +4,86 @@ import toast from 'react-hot-toast';
 import { scheduleApi } from '../utils/api';
 import LoadingSpinner from '../components/LoadingSpinner';
 
-const formatDate = (value) => {
-  if (!value) return '--';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '--';
-  return date.toLocaleString();
+const TIMEZONE_ALIAS_MAP = {
+  'Asia/Calcutta': 'Asia/Kolkata',
+};
+
+const normalizeTimezone = (timezone) => {
+  if (!timezone) return null;
+  return TIMEZONE_ALIAS_MAP[timezone] || timezone;
+};
+
+const hasExplicitTimezone = (value) => /(?:[zZ]|[+\-]\d{2}:?\d{2})$/.test(value);
+
+const parseUtcDate = (value) => {
+  if (!value) return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  if (typeof value === 'number') {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  const normalized = hasExplicitTimezone(raw)
+    ? raw
+    : `${raw.replace(' ', 'T')}Z`;
+
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const isValidTimezone = (timezone) => {
+  if (!timezone) return false;
+  const normalized = normalizeTimezone(timezone);
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: normalized }).format(new Date());
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const formatDatePart = (value, timezone) => {
+  const date = parseUtcDate(value);
+  if (!date) return '--';
+
+  const options = {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  };
+  const normalized = normalizeTimezone(timezone);
+  if (isValidTimezone(normalized)) {
+    options.timeZone = normalized;
+  }
+  return new Intl.DateTimeFormat('en-US', options).format(date);
+};
+
+const formatTimePart = (value, timezone) => {
+  const date = parseUtcDate(value);
+  if (!date) return '--';
+
+  const options = {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  };
+  const normalized = normalizeTimezone(timezone);
+  if (isValidTimezone(normalized)) {
+    options.timeZone = normalized;
+  }
+  return new Intl.DateTimeFormat('en-US', options).format(date);
 };
 
 const toLocalDateTimeInput = (value) => {
   if (!value) return '';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
+  const date = parseUtcDate(value);
+  if (!date || Number.isNaN(date.getTime())) return '';
   const tzOffsetMs = date.getTimezoneOffset() * 60000;
   return new Date(date.getTime() - tzOffsetMs).toISOString().slice(0, 16);
 };
@@ -55,6 +124,7 @@ const statusClass = {
 };
 
 const SchedulePage = () => {
+  const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const [posts, setPosts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [actionPostId, setActionPostId] = useState(null);
@@ -79,8 +149,8 @@ const SchedulePage = () => {
 
   const groupedByDay = useMemo(() => {
     return posts.reduce((acc, post) => {
-      const date = new Date(post.scheduled_for || post.created_at);
-      const key = Number.isNaN(date.getTime()) ? 'Unknown Date' : date.toDateString();
+      const date = parseUtcDate(post.scheduled_for || post.created_at);
+      const key = !date || Number.isNaN(date.getTime()) ? 'Unknown Date' : date.toDateString();
       if (!acc[key]) {
         acc[key] = [];
       }
@@ -176,6 +246,17 @@ const SchedulePage = () => {
                 {datePosts.map((post) => {
                   const status = String(post.status || '').toLowerCase();
                   const isBusy = actionPostId === post.id;
+                  const isExternal = Boolean(post.is_external_cross_post || post.external_read_only);
+                  const externalSourceLabel =
+                    post.external_source === 'linkedin-genie'
+                      ? 'LinkedIn Genie'
+                      : post.external_source === 'tweet-genie'
+                        ? 'Tweet Genie'
+                        : 'External';
+                  const timezoneLabel = isValidTimezone(post.timezone)
+                    ? normalizeTimezone(post.timezone)
+                    : null;
+                  const displayTimezone = timezoneLabel || userTimezone;
 
                   return (
                     <div key={post.id} className="rounded-lg border border-gray-200 p-4 space-y-2">
@@ -191,14 +272,30 @@ const SchedulePage = () => {
                       </div>
 
                       <p className="text-sm text-gray-800 whitespace-pre-wrap">{post.caption || 'No caption'}</p>
+                      {isExternal && (
+                        <div className="text-xs">
+                          <span className="inline-flex items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-2 py-1 font-medium text-violet-700">
+                            External · {externalSourceLabel} cross-post (read-only)
+                          </span>
+                        </div>
+                      )}
 
                       <div className="inline-flex items-center gap-2 text-xs text-gray-500">
                         <Clock3 className="h-3 w-3" />
-                        {formatDate(post.scheduled_for || post.created_at)}
+                        <span>
+                          {formatDatePart(post.scheduled_for || post.created_at, displayTimezone)}
+                          {' · '}
+                          {formatTimePart(post.scheduled_for || post.created_at, displayTimezone)}
+                          {timezoneLabel ? ` (${timezoneLabel})` : ''}
+                        </span>
                       </div>
 
                       <div className="flex flex-wrap gap-2 pt-1">
-                        {status !== 'deleted' && status !== 'posted' && (
+                        {isExternal ? (
+                          <span className="rounded-md border border-gray-200 bg-gray-50 px-3 py-1 text-xs font-medium text-gray-500">
+                            Managed in {externalSourceLabel}
+                          </span>
+                        ) : status !== 'deleted' && status !== 'posted' && (
                           <button
                             type="button"
                             onClick={() => handleReschedule(post)}
@@ -209,7 +306,7 @@ const SchedulePage = () => {
                           </button>
                         )}
 
-                        {status === 'failed' && (
+                        {!isExternal && status === 'failed' && (
                           <button
                             type="button"
                             onClick={() => handleRetry(post)}
@@ -220,7 +317,7 @@ const SchedulePage = () => {
                           </button>
                         )}
 
-                        {status !== 'deleted' && status !== 'posted' && (
+                        {!isExternal && status !== 'deleted' && status !== 'posted' && (
                           <button
                             type="button"
                             onClick={() => handleCancel(post)}

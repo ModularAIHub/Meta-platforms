@@ -128,6 +128,9 @@ const CreatePostPage = () => {
   const [threadsPosts, setThreadsPosts] = useState(['', '']);
   const [postMode, setPostMode] = useState('now');
   const [scheduledFor, setScheduledFor] = useState('');
+  const [postThreadsToX, setPostThreadsToX] = useState(false);
+  const [postThreadsToLinkedIn, setPostThreadsToLinkedIn] = useState(false);
+  const [optimizeCrossPost, setOptimizeCrossPost] = useState(true);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showAiAssist, setShowAiAssist] = useState(false);
 
@@ -164,6 +167,13 @@ const CreatePostPage = () => {
     () => activePlatforms.filter((platform) => !connectedPlatformSet.has(platform)),
     [activePlatforms, connectedPlatformSet]
   );
+
+  useEffect(() => {
+    if (!selectedPlatforms.threads) {
+      setPostThreadsToX(false);
+      setPostThreadsToLinkedIn(false);
+    }
+  }, [selectedPlatforms.threads]);
 
   const isThreadsThread = selectedPlatforms.threads && threadsType === 'thread';
   const isOnlyThreadsSingle =
@@ -355,6 +365,9 @@ Rules:
     const normalizedThreadPosts = threadsPosts
       .map((post) => post.trim())
       .filter(Boolean);
+    const hasThreadsCrossPostTargets = Boolean(
+      selectedPlatforms.threads && (postThreadsToX || postThreadsToLinkedIn)
+    );
 
     return {
       caption,
@@ -367,6 +380,13 @@ Rules:
       threadsPosts: isThreadsThread ? normalizedThreadPosts : [],
       postNow: postMode === 'now',
       scheduledFor: postMode === 'schedule' && scheduledFor ? new Date(scheduledFor).toISOString() : null,
+      ...(hasThreadsCrossPostTargets && {
+        crossPostTargets: {
+          x: postThreadsToX,
+          linkedin: postThreadsToLinkedIn,
+        },
+        optimizeCrossPost,
+      }),
     };
   };
 
@@ -480,6 +500,8 @@ Rules:
       setThreadsPosts(['', '']);
       setPostMode('now');
       setScheduledFor('');
+      setPostThreadsToX(false);
+      setPostThreadsToLinkedIn(false);
       setPreflightIssues([]);
     } catch (error) {
       const apiError = error.response?.data?.error;
@@ -837,12 +859,52 @@ Rules:
         </div>
 
         {postMode === 'schedule' && (
-          <input
-            type="datetime-local"
-            className="input"
-            value={scheduledFor}
-            onChange={(event) => setScheduledFor(event.target.value)}
-          />
+          <div className="space-y-3">
+            <input
+              type="datetime-local"
+              className="input"
+              value={scheduledFor}
+              onChange={(event) => setScheduledFor(event.target.value)}
+            />
+          </div>
+        )}
+
+        {selectedPlatforms.threads && (
+          <div className="rounded-lg border border-violet-200 bg-violet-50 p-3 space-y-2">
+            <p className="text-sm font-medium text-violet-900">
+              Threads cross-post to X / LinkedIn
+            </p>
+            <p className="text-xs text-violet-800">
+              Runs {postMode === 'schedule' ? 'when the scheduled Threads post publishes' : 'after the Threads post is published'}.
+              Thread chains are skipped for X/LinkedIn cross-posting.
+            </p>
+            <label className="flex items-center justify-between gap-3 text-sm text-violet-900">
+              <span>Cross-post Threads post to X</span>
+              <input
+                type="checkbox"
+                checked={postThreadsToX}
+                onChange={() => setPostThreadsToX((value) => !value)}
+              />
+            </label>
+            <label className="flex items-center justify-between gap-3 text-sm text-violet-900">
+              <span>Cross-post Threads post to LinkedIn</span>
+              <input
+                type="checkbox"
+                checked={postThreadsToLinkedIn}
+                onChange={() => setPostThreadsToLinkedIn((value) => !value)}
+              />
+            </label>
+            {(postThreadsToX || postThreadsToLinkedIn) && (
+              <label className="flex items-center justify-between gap-3 text-xs text-violet-800">
+                <span>Optimize formatting for cross-post targets</span>
+                <input
+                  type="checkbox"
+                  checked={optimizeCrossPost}
+                  onChange={() => setOptimizeCrossPost((value) => !value)}
+                />
+              </label>
+            )}
+          </div>
         )}
 
         <div className="rounded-lg bg-gray-50 border border-gray-200 p-3 text-sm text-gray-600 space-y-1">

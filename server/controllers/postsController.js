@@ -17,8 +17,12 @@ const THREADS_AUTO_SPLIT_MAX_CHARS = Math.max(
   Number.parseInt(process.env.THREADS_AUTO_SPLIT_MAX_CHARS || '10000', 10)
 );
 const THREADS_MAX_CHAIN_POSTS = Math.max(2, Number.parseInt(process.env.THREADS_MAX_CHAIN_POSTS || '30', 10));
+const X_CROSSPOST_TIMEOUT_MS = Number.parseInt(process.env.X_CROSSPOST_TIMEOUT_MS || '10000', 10);
+const LINKEDIN_CROSSPOST_TIMEOUT_MS = Number.parseInt(process.env.LINKEDIN_CROSSPOST_TIMEOUT_MS || '10000', 10);
+const INTERNAL_CALLER = 'social-genie-api';
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.m4v', '.webm', '.avi', '.mpeg', '.mpg']);
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+let socialPostsMetadataColumnExistsCache = null;
 
 const createHttpError = (status, message, code = null) => {
   const error = new Error(message);
@@ -129,6 +133,230 @@ const getRequestHost = (req) => {
     return String(forwardedHost).split(',')[0].trim();
   }
   return req.get('host') || null;
+};
+
+const detectMediaForCrossPost = (mediaUrls) =>
+  Array.isArray(mediaUrls) && mediaUrls.some((url) => String(url || '').trim().length > 0);
+
+const buildInternalServiceHeaders = ({ userId, internalApiKey }) => ({
+  'Content-Type': 'application/json',
+  'x-internal-api-key': internalApiKey,
+  'x-internal-caller': INTERNAL_CALLER,
+  'x-platform-user-id': String(userId),
+});
+
+const buildInternalServiceEndpoint = (baseUrl, path) =>
+  `${String(baseUrl || '').trim().replace(/\/$/, '')}${path}`;
+
+const postInternalJson = async ({ endpoint, userId, internalApiKey, payload, timeoutMs = 0 }) => {
+  const controller = Number.isFinite(timeoutMs) && timeoutMs > 0 ? new AbortController() : null;
+  let timeoutId = null;
+
+  try {
+    if (controller) {
+      timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    }
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: buildInternalServiceHeaders({ userId, internalApiKey }),
+      body: JSON.stringify(payload),
+      signal: controller?.signal,
+    });
+
+    const body = await response.json().catch(() => ({}));
+    return { response, body };
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+};
+
+const crossPostThreadsToXNow = async ({ userId, content, mediaDetected = false }) => {
+  const tweetGenieUrl = String(process.env.TWEET_GENIE_URL || '').trim();
+  const internalApiKey = String(process.env.INTERNAL_API_KEY || '').trim();
+  if (!tweetGenieUrl || !internalApiKey) return { status: 'skipped_not_configured' };
+
+  try {
+    const { response, body } = await postInternalJson({
+      endpoint: buildInternalServiceEndpoint(tweetGenieUrl, '/api/internal/twitter/cross-post'),
+      userId,
+      internalApiKey,
+      timeoutMs: X_CROSSPOST_TIMEOUT_MS,
+      payload: {
+        postMode: 'single',
+        content,
+        mediaDetected: Boolean(mediaDetected),
+        sourcePlatform: 'threads_now',
+      },
+    });
+
+    if (!response.ok) {
+      const code = String(body?.code || '').toUpperCase();
+      if (response.status === 404 && code.includes('NOT_CONNECTED')) return { status: 'not_connected' };
+      if (response.status === 401 && code.includes('TOKEN_EXPIRED')) return { status: 'not_connected' };
+      if (response.status === 400 && code === 'X_POST_TOO_LONG') return { status: 'failed_too_long' };
+      return { status: 'failed' };
+    }
+
+    return {
+      status: body?.status || 'posted',
+      tweetId: body?.tweetId || null,
+      tweetUrl: body?.tweetUrl || null,
+      mediaDetected: Boolean(mediaDetected),
+    };
+  } catch (error) {
+    if (error?.name === 'AbortError') return { status: 'timeout' };
+    console.warn('[THREADS CROSSPOST] X cross-post failed', { userId, error: error?.message || String(error) });
+    return { status: 'failed' };
+  }
+};
+
+const saveThreadsCrossPostToTweetHistory = async ({ userId, content, tweetId = null, mediaDetected = false }) => {
+  const tweetGenieUrl = String(process.env.TWEET_GENIE_URL || '').trim();
+  const internalApiKey = String(process.env.INTERNAL_API_KEY || '').trim();
+  if (!tweetGenieUrl || !internalApiKey) return;
+
+  try {
+    await postInternalJson({
+      endpoint: buildInternalServiceEndpoint(tweetGenieUrl, '/api/internal/twitter/save-to-history'),
+      userId,
+      internalApiKey,
+      payload: {
+        content,
+        tweetId,
+        sourcePlatform: 'threads_now',
+        mediaDetected: Boolean(mediaDetected),
+      },
+    });
+  } catch {
+    // Non-blocking history write
+  }
+};
+
+const crossPostThreadsToLinkedInNow = async ({ userId, content }) => {
+  const linkedInGenieUrl = String(process.env.LINKEDIN_GENIE_URL || '').trim();
+  const internalApiKey = String(process.env.INTERNAL_API_KEY || '').trim();
+  if (!linkedInGenieUrl || !internalApiKey) return { status: 'skipped_not_configured' };
+
+  try {
+    const { response, body } = await postInternalJson({
+      endpoint: buildInternalServiceEndpoint(linkedInGenieUrl, '/api/internal/cross-post'),
+      userId,
+      internalApiKey,
+      timeoutMs: LINKEDIN_CROSSPOST_TIMEOUT_MS,
+      payload: { content },
+    });
+
+    if (!response.ok) {
+      const code = String(body?.code || '').toUpperCase();
+      if (response.status === 404 && code.includes('NOT_CONNECTED')) return { status: 'not_connected' };
+      if (response.status === 401 && code.includes('TOKEN_EXPIRED')) return { status: 'not_connected' };
+      return { status: 'failed' };
+    }
+
+    return {
+      status: 'posted',
+      linkedinPostId: body?.linkedinPostId || null,
+    };
+  } catch (error) {
+    if (error?.name === 'AbortError') return { status: 'timeout' };
+    console.warn('[THREADS CROSSPOST] LinkedIn cross-post failed', { userId, error: error?.message || String(error) });
+    return { status: 'failed' };
+  }
+};
+
+const executeImmediateThreadsCrossPost = async ({
+  userId,
+  teamId = null,
+  sourceContent = '',
+  mediaUrls = [],
+  isThreadChain = false,
+  metadata = null,
+}) => {
+  const baseMetadata =
+    metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? { ...metadata } : {};
+  const crossPostMeta =
+    baseMetadata.cross_post && typeof baseMetadata.cross_post === 'object'
+      ? { ...baseMetadata.cross_post }
+      : null;
+
+  if (!crossPostMeta) {
+    return baseMetadata;
+  }
+
+  const targets =
+    crossPostMeta.targets && typeof crossPostMeta.targets === 'object' ? crossPostMeta.targets : {};
+  const xEnabled = Boolean(targets.x || targets.twitter);
+  const linkedinEnabled = Boolean(targets.linkedin || targets.linkedIn);
+  const mediaDetected = detectMediaForCrossPost(mediaUrls);
+  const crossPostResult = {
+    x: {
+      enabled: xEnabled,
+      status: xEnabled ? null : 'disabled',
+      mediaDetected: Boolean(mediaDetected),
+      mediaStatus: mediaDetected ? 'text_only_phase1' : 'none',
+    },
+    linkedin: {
+      enabled: linkedinEnabled,
+      status: linkedinEnabled ? null : 'disabled',
+      mediaDetected: Boolean(mediaDetected),
+      mediaStatus: mediaDetected ? 'text_only_phase1' : 'none',
+    },
+  };
+
+  if (xEnabled || linkedinEnabled) {
+    if (teamId) {
+      if (xEnabled) crossPostResult.x.status = 'skipped_individual_only';
+      if (linkedinEnabled) crossPostResult.linkedin.status = 'skipped_individual_only';
+    } else if (isThreadChain) {
+      if (xEnabled) crossPostResult.x.status = 'skipped_individual_only';
+      if (linkedinEnabled) crossPostResult.linkedin.status = 'skipped_individual_only';
+    } else {
+      const normalizedContent = String(sourceContent || '').trim();
+
+      if (xEnabled) {
+        const xResult = await crossPostThreadsToXNow({
+          userId,
+          content: normalizedContent,
+          mediaDetected,
+        });
+        crossPostResult.x = {
+          ...crossPostResult.x,
+          ...xResult,
+          status: xResult?.status || 'failed',
+        };
+
+        if (crossPostResult.x.status === 'posted') {
+          await saveThreadsCrossPostToTweetHistory({
+            userId,
+            content: normalizedContent,
+            tweetId: crossPostResult.x.tweetId || null,
+            mediaDetected,
+          });
+        }
+      }
+
+      if (linkedinEnabled) {
+        const linkedInResult = await crossPostThreadsToLinkedInNow({
+          userId,
+          content: normalizedContent,
+        });
+        crossPostResult.linkedin = {
+          ...crossPostResult.linkedin,
+          ...linkedInResult,
+          status: linkedInResult?.status || 'failed',
+        };
+      }
+    }
+  }
+
+  crossPostMeta.last_attempted_at = new Date().toISOString();
+  crossPostMeta.last_result = crossPostResult;
+
+  return {
+    ...baseMetadata,
+    cross_post: crossPostMeta,
+  };
 };
 
 const normalizeThreadsPosts = (input) => {
@@ -279,6 +507,73 @@ const buildOwnershipClause = ({ isTeamMember, teamId, userId, startIndex = 1 }) 
   };
 };
 
+const normalizeThreadsCrossPostTargets = ({ crossPostTargets = null, postToX = false, postToTwitter = false, postToLinkedin = false, postToLinkedIn = false } = {}) => {
+  const raw =
+    crossPostTargets && typeof crossPostTargets === 'object' && !Array.isArray(crossPostTargets)
+      ? crossPostTargets
+      : {};
+
+  return {
+    x:
+      typeof raw.x === 'boolean'
+        ? raw.x
+        : (typeof raw.twitter === 'boolean' ? raw.twitter : Boolean(postToX || postToTwitter)),
+    linkedin:
+      typeof raw.linkedin === 'boolean'
+        ? raw.linkedin
+        : (typeof raw.linkedIn === 'boolean' ? raw.linkedIn : Boolean(postToLinkedin || postToLinkedIn)),
+  };
+};
+
+const buildThreadsCrossPostMetadata = ({ targets, optimizeCrossPost = true, source = 'social_genie_threads' } = {}) => {
+  const x = Boolean(targets?.x);
+  const linkedin = Boolean(targets?.linkedin);
+  if (!x && !linkedin) return null;
+
+  return {
+    cross_post: {
+      version: 1,
+      source,
+      createdAt: new Date().toISOString(),
+      optimizeCrossPost: optimizeCrossPost !== false,
+      targets: {
+        x,
+        linkedin,
+      },
+    },
+  };
+};
+
+const ensureSocialPostsMetadataColumn = async () => {
+  if (typeof socialPostsMetadataColumnExistsCache === 'boolean') {
+    return socialPostsMetadataColumnExistsCache;
+  }
+
+  try {
+    try {
+      await query(
+        `ALTER TABLE social_posts
+         ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb`
+      );
+    } catch {
+      // Fall through to schema check; some environments may block ALTER TABLE.
+    }
+
+    const result = await query(
+      `SELECT 1
+       FROM information_schema.columns
+       WHERE table_name = 'social_posts'
+         AND column_name = 'metadata'
+       LIMIT 1`
+    );
+    socialPostsMetadataColumnExistsCache = result.rows.length > 0;
+  } catch {
+    socialPostsMetadataColumnExistsCache = false;
+  }
+
+  return socialPostsMetadataColumnExistsCache;
+};
+
 export const createPost = async (req, res) => {
   try {
     const { userId, teamId, isTeamMember } = resolveContextParams(req);
@@ -294,6 +589,12 @@ export const createPost = async (req, res) => {
       threadsPosts = [],
       postNow = true,
       scheduledFor = null,
+      crossPostTargets = null,
+      optimizeCrossPost = true,
+      postToX = false,
+      postToTwitter = false,
+      postToLinkedin = false,
+      postToLinkedIn = false,
     } = req.body || {};
 
     const normalizedPlatforms = Array.isArray(platforms)
@@ -343,6 +644,22 @@ export const createPost = async (req, res) => {
       captionTargetPlatforms.length === 0 && isThreadsThread
         ? THREADS_AUTO_SPLIT_MAX_CHARS
         : baseCaptionLimit;
+    const requestedThreadsCrossPostTargets = normalizeThreadsCrossPostTargets({
+      crossPostTargets,
+      postToX,
+      postToTwitter,
+      postToLinkedin,
+      postToLinkedIn,
+    });
+    const effectiveThreadsCrossPostTargets = threadsSelected
+      ? requestedThreadsCrossPostTargets
+      : { x: false, linkedin: false };
+    const threadsCrossPostMetadata = buildThreadsCrossPostMetadata({
+      targets: effectiveThreadsCrossPostTargets,
+      optimizeCrossPost,
+      source: postNow ? 'social_genie_threads_now' : 'social_genie_threads_schedule',
+    });
+    const canStoreMetadata = threadsCrossPostMetadata ? await ensureSocialPostsMetadataColumn() : false;
 
     if (normalizedPlatforms.some((platform) => platform === 'instagram' || platform === 'youtube') && !normalizedCaption) {
       return res.status(400).json({ error: 'Caption is required for Instagram/YouTube posts' });
@@ -558,6 +875,7 @@ export const createPost = async (req, res) => {
     let youtubeVideoId = null;
     let threadsPostId = null;
     let threadPostIds = [];
+    let resolvedThreadsCrossPostMetadata = threadsCrossPostMetadata || null;
 
     try {
       if (postNow && normalizedPlatforms.includes('instagram')) {
@@ -629,53 +947,99 @@ export const createPost = async (req, res) => {
         }
       }
 
-      await query(
-        `INSERT INTO social_posts (
-           id, user_id, team_id, caption, media_urls, platforms, cross_post,
-           instagram_content_type, youtube_content_type, threads_content_type,
-           status, scheduled_for, posted_at,
-           instagram_post_id, youtube_video_id, threads_post_id, threads_sequence,
-           instagram_likes, instagram_comments, instagram_reach,
-           youtube_views, youtube_watch_time_minutes, youtube_subscribers_gained,
-           threads_likes, threads_replies, threads_views
-         ) VALUES (
-           $1, $2, $3, $4, $5::jsonb, $6::jsonb, $7,
-           $8, $9, $10,
-           $11, $12, $13,
-           $14, $15, $16, $17::jsonb,
-           $18, $19, $20,
-           $21, $22, $23,
-           $24, $25, $26
-         )`,
-        [
-          id,
-          userId,
-          teamId,
-          effectiveCaption,
-          JSON.stringify(mediaUrls || []),
-          JSON.stringify(normalizedPlatforms),
-          Boolean(crossPost),
-          instagramContentType,
-          youtubeContentType,
-          effectiveThreadsType,
-          status,
-          scheduledIso,
-          postNow ? nowIso : null,
-          instagramPostId,
-          youtubeVideoId,
-          threadsPostId,
-          JSON.stringify(isThreadsThread && !postNow ? effectiveThreadsPosts : threadPostIds),
-          metrics.instagram_likes,
-          metrics.instagram_comments,
-          metrics.instagram_reach,
-          metrics.youtube_views,
-          metrics.youtube_watch_time_minutes,
-          metrics.youtube_subscribers_gained,
-          metrics.threads_likes,
-          metrics.threads_replies,
-          metrics.threads_views,
-        ]
-      );
+      if (postNow && normalizedPlatforms.includes('threads') && resolvedThreadsCrossPostMetadata) {
+        try {
+          resolvedThreadsCrossPostMetadata = await executeImmediateThreadsCrossPost({
+            userId,
+            teamId,
+            sourceContent: effectiveCaption || effectiveThreadsPosts[0] || '',
+            mediaUrls,
+            isThreadChain: Boolean(isThreadsThread || (Array.isArray(threadPostIds) && threadPostIds.length > 1)),
+            metadata: resolvedThreadsCrossPostMetadata,
+          });
+        } catch (crossPostError) {
+          console.warn('[THREADS CROSSPOST] Immediate cross-post execution failed', {
+            userId,
+            error: crossPostError?.message || String(crossPostError),
+          });
+        }
+      }
+
+      const insertParams = [
+        id,
+        userId,
+        teamId,
+        effectiveCaption,
+        JSON.stringify(mediaUrls || []),
+        JSON.stringify(normalizedPlatforms),
+        Boolean(crossPost),
+        instagramContentType,
+        youtubeContentType,
+        effectiveThreadsType,
+        status,
+        scheduledIso,
+        postNow ? nowIso : null,
+        instagramPostId,
+        youtubeVideoId,
+        threadsPostId,
+        JSON.stringify(isThreadsThread && !postNow ? effectiveThreadsPosts : threadPostIds),
+        metrics.instagram_likes,
+        metrics.instagram_comments,
+        metrics.instagram_reach,
+        metrics.youtube_views,
+        metrics.youtube_watch_time_minutes,
+        metrics.youtube_subscribers_gained,
+        metrics.threads_likes,
+        metrics.threads_replies,
+        metrics.threads_views,
+      ];
+
+      if (canStoreMetadata) {
+        insertParams.push(JSON.stringify(resolvedThreadsCrossPostMetadata || {}));
+        await query(
+          `INSERT INTO social_posts (
+             id, user_id, team_id, caption, media_urls, platforms, cross_post,
+             instagram_content_type, youtube_content_type, threads_content_type,
+             status, scheduled_for, posted_at,
+             instagram_post_id, youtube_video_id, threads_post_id, threads_sequence,
+             instagram_likes, instagram_comments, instagram_reach,
+             youtube_views, youtube_watch_time_minutes, youtube_subscribers_gained,
+             threads_likes, threads_replies, threads_views,
+             metadata
+           ) VALUES (
+             $1, $2, $3, $4, $5::jsonb, $6::jsonb, $7,
+             $8, $9, $10,
+             $11, $12, $13,
+             $14, $15, $16, $17::jsonb,
+             $18, $19, $20,
+             $21, $22, $23,
+             $24, $25, $26,
+             $27::jsonb
+           )`,
+          insertParams
+        );
+      } else {
+        await query(
+          `INSERT INTO social_posts (
+             id, user_id, team_id, caption, media_urls, platforms, cross_post,
+             instagram_content_type, youtube_content_type, threads_content_type,
+             status, scheduled_for, posted_at,
+             instagram_post_id, youtube_video_id, threads_post_id, threads_sequence,
+             instagram_likes, instagram_comments, instagram_reach,
+             youtube_views, youtube_watch_time_minutes, youtube_subscribers_gained,
+             threads_likes, threads_replies, threads_views
+           ) VALUES (
+             $1, $2, $3, $4, $5::jsonb, $6::jsonb, $7,
+             $8, $9, $10,
+             $11, $12, $13,
+             $14, $15, $16, $17::jsonb,
+             $18, $19, $20,
+             $21, $22, $23,
+             $24, $25, $26
+           )`,
+          insertParams
+        );
+      }
     } catch (operationError) {
       if (creditsDeducted && creditMeta.creditsUsed > 0) {
         await TeamCreditService.refundCredits(

@@ -9,9 +9,14 @@ const WORKER_ENABLED = String(process.env.SOCIAL_SCHEDULE_WORKER_ENABLED || 'tru
 const WORKER_POLL_MS = Math.max(5000, Number.parseInt(process.env.SOCIAL_SCHEDULE_WORKER_POLL_MS || '15000', 10));
 const WORKER_BATCH_SIZE = Math.max(1, Number.parseInt(process.env.SOCIAL_SCHEDULE_WORKER_BATCH_SIZE || '5', 10));
 const THREADS_TEXT_MAX_CHARS = Math.max(120, Number.parseInt(process.env.THREADS_TEXT_MAX_CHARS || '500', 10));
+const X_CROSSPOST_TIMEOUT_MS = Number.parseInt(process.env.X_CROSSPOST_TIMEOUT_MS || '10000', 10);
+const LINKEDIN_CROSSPOST_TIMEOUT_MS = Number.parseInt(process.env.LINKEDIN_CROSSPOST_TIMEOUT_MS || '10000', 10);
+const INTERNAL_CALLER = 'social-genie-scheduler';
 
 let pollTimer = null;
 let isRunning = false;
+let metadataColumnChecked = false;
+let metadataColumnAvailable = false;
 
 const parseJsonArray = (value) => {
   if (Array.isArray(value)) return value;
@@ -24,6 +29,178 @@ const parseJsonArray = (value) => {
     }
   }
   return [];
+};
+
+const parseJsonObject = (value, fallback = {}) => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return { ...fallback, ...value };
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return { ...fallback, ...parsed };
+      }
+    } catch {
+      return { ...fallback };
+    }
+  }
+  return { ...fallback };
+};
+
+const detectMedia = (mediaUrls) =>
+  Array.isArray(mediaUrls) && mediaUrls.some((url) => String(url || '').trim().length > 0);
+
+const buildInternalServiceHeaders = ({ userId, internalApiKey }) => ({
+  'Content-Type': 'application/json',
+  'x-internal-api-key': internalApiKey,
+  'x-internal-caller': INTERNAL_CALLER,
+  'x-platform-user-id': String(userId),
+});
+
+const buildInternalServiceEndpoint = (baseUrl, path) =>
+  `${String(baseUrl || '').trim().replace(/\/$/, '')}${path}`;
+
+const postInternalJson = async ({ endpoint, userId, internalApiKey, payload, timeoutMs = 0 }) => {
+  const controller = Number.isFinite(timeoutMs) && timeoutMs > 0 ? new AbortController() : null;
+  let timeoutId = null;
+  try {
+    if (controller) timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: buildInternalServiceHeaders({ userId, internalApiKey }),
+      body: JSON.stringify(payload),
+      signal: controller?.signal,
+    });
+    const body = await response.json().catch(() => ({}));
+    return { response, body };
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+};
+
+const ensureMetadataColumnSupport = async () => {
+  if (metadataColumnChecked) return metadataColumnAvailable;
+
+  try {
+    try {
+      await query(
+        `ALTER TABLE social_posts
+         ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb`
+      );
+    } catch {
+      // continue to schema inspection
+    }
+
+    const result = await query(
+      `SELECT 1
+       FROM information_schema.columns
+       WHERE table_name = 'social_posts'
+         AND column_name = 'metadata'
+       LIMIT 1`
+    );
+    metadataColumnAvailable = result.rows.length > 0;
+  } catch {
+    metadataColumnAvailable = false;
+  } finally {
+    metadataColumnChecked = true;
+  }
+
+  return metadataColumnAvailable;
+};
+
+const crossPostToX = async ({ userId, content, mediaDetected = false }) => {
+  const tweetGenieUrl = String(process.env.TWEET_GENIE_URL || '').trim();
+  const internalApiKey = String(process.env.INTERNAL_API_KEY || '').trim();
+  if (!tweetGenieUrl || !internalApiKey) return { status: 'skipped_not_configured' };
+
+  try {
+    const { response, body } = await postInternalJson({
+      endpoint: buildInternalServiceEndpoint(tweetGenieUrl, '/api/internal/twitter/cross-post'),
+      userId,
+      internalApiKey,
+      timeoutMs: X_CROSSPOST_TIMEOUT_MS,
+      payload: {
+        postMode: 'single',
+        content,
+        mediaDetected: Boolean(mediaDetected),
+        sourcePlatform: 'threads_schedule',
+      },
+    });
+
+    if (!response.ok) {
+      if (response.status === 404 && String(body?.code || '').toUpperCase().includes('NOT_CONNECTED')) return { status: 'not_connected' };
+      if (response.status === 401 && String(body?.code || '').toUpperCase().includes('TOKEN_EXPIRED')) return { status: 'not_connected' };
+      if (response.status === 400 && String(body?.code || '').toUpperCase() === 'X_POST_TOO_LONG') return { status: 'failed_too_long' };
+      return { status: 'failed' };
+    }
+
+    return {
+      status: body?.status || 'posted',
+      tweetId: body?.tweetId || null,
+      tweetUrl: body?.tweetUrl || null,
+      mediaDetected: Boolean(mediaDetected),
+    };
+  } catch (error) {
+    if (error?.name === 'AbortError') return { status: 'timeout' };
+    logger.warn('Threads scheduled X cross-post failed', { userId, error: error?.message || String(error) });
+    return { status: 'failed' };
+  }
+};
+
+const saveToTweetHistory = async ({ userId, content, tweetId = null, mediaDetected = false }) => {
+  const tweetGenieUrl = String(process.env.TWEET_GENIE_URL || '').trim();
+  const internalApiKey = String(process.env.INTERNAL_API_KEY || '').trim();
+  if (!tweetGenieUrl || !internalApiKey) return;
+
+  try {
+    await postInternalJson({
+      endpoint: buildInternalServiceEndpoint(tweetGenieUrl, '/api/internal/twitter/save-to-history'),
+      userId,
+      internalApiKey,
+      payload: {
+        content,
+        tweetId,
+        sourcePlatform: 'threads_schedule',
+        mediaDetected: Boolean(mediaDetected),
+      },
+    });
+  } catch {
+    // Non-blocking history write
+  }
+};
+
+const crossPostToLinkedIn = async ({ userId, content }) => {
+  const linkedInGenieUrl = String(process.env.LINKEDIN_GENIE_URL || '').trim();
+  const internalApiKey = String(process.env.INTERNAL_API_KEY || '').trim();
+  if (!linkedInGenieUrl || !internalApiKey) return { status: 'skipped_not_configured' };
+
+  try {
+    const { response, body } = await postInternalJson({
+      endpoint: buildInternalServiceEndpoint(linkedInGenieUrl, '/api/internal/cross-post'),
+      userId,
+      internalApiKey,
+      timeoutMs: LINKEDIN_CROSSPOST_TIMEOUT_MS,
+      payload: {
+        content,
+      },
+    });
+
+    if (!response.ok) {
+      if (response.status === 404 && String(body?.code || '').toUpperCase().includes('NOT_CONNECTED')) return { status: 'not_connected' };
+      if (response.status === 401 && String(body?.code || '').toUpperCase().includes('TOKEN_EXPIRED')) return { status: 'not_connected' };
+      return { status: 'failed' };
+    }
+
+    return {
+      status: 'posted',
+      linkedinPostId: body?.linkedinPostId || null,
+    };
+  } catch (error) {
+    if (error?.name === 'AbortError') return { status: 'timeout' };
+    logger.warn('Threads scheduled LinkedIn cross-post failed', { userId, error: error?.message || String(error) });
+    return { status: 'failed' };
+  }
 };
 
 const splitTextByLimit = (text, limit = THREADS_TEXT_MAX_CHARS) => {
@@ -123,7 +300,26 @@ const markFailed = async (postId, errorMessage) => {
   });
 };
 
-const markPosted = async ({ postId, instagramPostId, youtubeVideoId, threadsPostId, threadsSequence = null }) => {
+const markPosted = async ({ postId, instagramPostId, youtubeVideoId, threadsPostId, threadsSequence = null, metadata = undefined }) => {
+  const canWriteMetadata = (await ensureMetadataColumnSupport()) && metadata !== undefined;
+
+  if (canWriteMetadata) {
+    await query(
+      `UPDATE social_posts
+       SET status = 'posted',
+           posted_at = NOW(),
+           instagram_post_id = COALESCE($2, instagram_post_id),
+           youtube_video_id = COALESCE($3, youtube_video_id),
+           threads_post_id = COALESCE($4, threads_post_id),
+           threads_sequence = COALESCE($5::jsonb, threads_sequence),
+           metadata = $6::jsonb,
+           updated_at = NOW()
+       WHERE id = $1`,
+      [postId, instagramPostId, youtubeVideoId, threadsPostId, threadsSequence, JSON.stringify(metadata || {})]
+    );
+    return;
+  }
+
   await query(
     `UPDATE social_posts
      SET status = 'posted',
@@ -233,12 +429,93 @@ const publishScheduledPost = async (post) => {
     }
   }
 
+  const baseMetadata = parseJsonObject(post?.metadata, {});
+  const crossPostMeta =
+    baseMetadata?.cross_post && typeof baseMetadata.cross_post === 'object'
+      ? { ...baseMetadata.cross_post }
+      : null;
+  let nextMetadata = baseMetadata;
+
+  if (crossPostMeta && platforms.includes('threads')) {
+    const targets =
+      crossPostMeta.targets && typeof crossPostMeta.targets === 'object'
+        ? crossPostMeta.targets
+        : {};
+    const xEnabled = Boolean(targets.x || targets.twitter);
+    const linkedinEnabled = Boolean(targets.linkedin || targets.linkedIn);
+    const mediaDetected = detectMedia(mediaUrls);
+    const crossPostResult = {
+      x: {
+        enabled: xEnabled,
+        status: xEnabled ? null : 'disabled',
+        mediaDetected: Boolean(mediaDetected),
+        mediaStatus: mediaDetected ? 'text_only_phase1' : 'none',
+      },
+      linkedin: {
+        enabled: linkedinEnabled,
+        status: linkedinEnabled ? null : 'disabled',
+        mediaDetected: Boolean(mediaDetected),
+        mediaStatus: mediaDetected ? 'text_only_phase1' : 'none',
+      },
+    };
+
+    if (xEnabled || linkedinEnabled) {
+      if (post.team_id) {
+        if (xEnabled) crossPostResult.x.status = 'skipped_individual_only';
+        if (linkedinEnabled) crossPostResult.linkedin.status = 'skipped_individual_only';
+      } else {
+        const sourceContent = caption || threadsSequence[0] || '';
+
+        if (xEnabled) {
+          const xResult = await crossPostToX({
+            userId: post.user_id,
+            content: sourceContent,
+            mediaDetected,
+          });
+          crossPostResult.x = {
+            ...crossPostResult.x,
+            ...xResult,
+            status: xResult?.status || 'failed',
+          };
+          if (crossPostResult.x.status === 'posted') {
+            await saveToTweetHistory({
+              userId: post.user_id,
+              content: sourceContent,
+              tweetId: crossPostResult.x.tweetId || null,
+              mediaDetected,
+            });
+          }
+        }
+
+        if (linkedinEnabled) {
+          const linkedInResult = await crossPostToLinkedIn({
+            userId: post.user_id,
+            content: sourceContent,
+          });
+          crossPostResult.linkedin = {
+            ...crossPostResult.linkedin,
+            ...linkedInResult,
+            status: linkedInResult?.status || 'failed',
+          };
+        }
+      }
+    }
+
+    crossPostMeta.last_attempted_at = new Date().toISOString();
+    crossPostMeta.last_result = crossPostResult;
+    nextMetadata = {
+      ...baseMetadata,
+      cross_post: crossPostMeta,
+    };
+  }
+
   await markPosted({
     postId: post.id,
     instagramPostId,
     youtubeVideoId,
     threadsPostId,
     threadsSequence: threadPostIds.length > 0 ? JSON.stringify(threadPostIds) : null,
+    metadata: nextMetadata,
   });
 
   logger.info('Scheduled post published', {
