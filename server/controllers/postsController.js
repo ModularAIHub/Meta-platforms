@@ -171,7 +171,28 @@ const postInternalJson = async ({ endpoint, userId, internalApiKey, payload, tim
   }
 };
 
-const crossPostThreadsToXNow = async ({ userId, content, mediaDetected = false }) => {
+const normalizeCrossPostMedia = (value) => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter(Boolean)
+    .slice(0, 4);
+};
+
+const absolutizeSocialMediaUrlsForCrossPost = (mediaUrls = []) => {
+  const baseUrl = String(process.env.SOCIAL_GENIE_URL || '').trim();
+  return normalizeCrossPostMedia(mediaUrls).map((item) => {
+    if (/^https?:\/\//i.test(item) || item.startsWith('data:')) {
+      return item;
+    }
+    if (item.startsWith('/') && baseUrl) {
+      return buildInternalServiceEndpoint(baseUrl, item);
+    }
+    return item;
+  });
+};
+
+const crossPostThreadsToXNow = async ({ userId, content, mediaDetected = false, mediaUrls = [] }) => {
   const tweetGenieUrl = String(process.env.TWEET_GENIE_URL || '').trim();
   const internalApiKey = String(process.env.INTERNAL_API_KEY || '').trim();
   if (!tweetGenieUrl || !internalApiKey) return { status: 'skipped_not_configured' };
@@ -187,6 +208,7 @@ const crossPostThreadsToXNow = async ({ userId, content, mediaDetected = false }
         content,
         mediaDetected: Boolean(mediaDetected),
         sourcePlatform: 'threads_now',
+        media: absolutizeSocialMediaUrlsForCrossPost(mediaUrls),
       },
     });
 
@@ -195,7 +217,11 @@ const crossPostThreadsToXNow = async ({ userId, content, mediaDetected = false }
       if (response.status === 404 && code.includes('NOT_CONNECTED')) return { status: 'not_connected' };
       if (response.status === 401 && code.includes('TOKEN_EXPIRED')) return { status: 'not_connected' };
       if (response.status === 400 && code === 'X_POST_TOO_LONG') return { status: 'failed_too_long' };
-      return { status: 'failed' };
+      return {
+        status: 'failed',
+        mediaStatus: typeof body?.mediaStatus === 'string' ? body.mediaStatus : undefined,
+        mediaCount: Number.isFinite(Number(body?.mediaCount)) ? Number(body.mediaCount) : undefined,
+      };
     }
 
     return {
@@ -203,6 +229,8 @@ const crossPostThreadsToXNow = async ({ userId, content, mediaDetected = false }
       tweetId: body?.tweetId || null,
       tweetUrl: body?.tweetUrl || null,
       mediaDetected: Boolean(mediaDetected),
+      mediaStatus: typeof body?.mediaStatus === 'string' ? body.mediaStatus : (mediaDetected ? 'posted' : 'none'),
+      mediaCount: Number.isFinite(Number(body?.mediaCount)) ? Number(body.mediaCount) : (mediaDetected ? undefined : 0),
     };
   } catch (error) {
     if (error?.name === 'AbortError') return { status: 'timeout' };
@@ -233,7 +261,7 @@ const saveThreadsCrossPostToTweetHistory = async ({ userId, content, tweetId = n
   }
 };
 
-const crossPostThreadsToLinkedInNow = async ({ userId, content }) => {
+const crossPostThreadsToLinkedInNow = async ({ userId, content, mediaUrls = [] }) => {
   const linkedInGenieUrl = String(process.env.LINKEDIN_GENIE_URL || '').trim();
   const internalApiKey = String(process.env.INTERNAL_API_KEY || '').trim();
   if (!linkedInGenieUrl || !internalApiKey) return { status: 'skipped_not_configured' };
@@ -244,19 +272,29 @@ const crossPostThreadsToLinkedInNow = async ({ userId, content }) => {
       userId,
       internalApiKey,
       timeoutMs: LINKEDIN_CROSSPOST_TIMEOUT_MS,
-      payload: { content },
-    });
+        payload: {
+          content,
+          media: absolutizeSocialMediaUrlsForCrossPost(mediaUrls),
+          sourcePlatform: 'threads_now',
+        },
+      });
 
     if (!response.ok) {
       const code = String(body?.code || '').toUpperCase();
       if (response.status === 404 && code.includes('NOT_CONNECTED')) return { status: 'not_connected' };
       if (response.status === 401 && code.includes('TOKEN_EXPIRED')) return { status: 'not_connected' };
-      return { status: 'failed' };
+      return {
+        status: 'failed',
+        mediaStatus: typeof body?.mediaStatus === 'string' ? body.mediaStatus : undefined,
+        mediaCount: Number.isFinite(Number(body?.mediaCount)) ? Number(body.mediaCount) : undefined,
+      };
     }
 
     return {
       status: 'posted',
       linkedinPostId: body?.linkedinPostId || null,
+      mediaStatus: typeof body?.mediaStatus === 'string' ? body.mediaStatus : 'none',
+      mediaCount: Number.isFinite(Number(body?.mediaCount)) ? Number(body.mediaCount) : 0,
     };
   } catch (error) {
     if (error?.name === 'AbortError') return { status: 'timeout' };
@@ -319,6 +357,7 @@ const executeImmediateThreadsCrossPost = async ({
           userId,
           content: normalizedContent,
           mediaDetected,
+          mediaUrls,
         });
         crossPostResult.x = {
           ...crossPostResult.x,
@@ -340,6 +379,7 @@ const executeImmediateThreadsCrossPost = async ({
         const linkedInResult = await crossPostThreadsToLinkedInNow({
           userId,
           content: normalizedContent,
+          mediaUrls,
         });
         crossPostResult.linkedin = {
           ...crossPostResult.linkedin,
