@@ -1,5 +1,5 @@
-const cloudinary = require('cloudinary').v2;
-const axios = require('axios');
+import { v2 as cloudinary } from 'cloudinary';
+import axios from 'axios';
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -23,4 +23,4 @@ function isCloudinaryUrl(url) {
   return typeof url === 'string' && url.includes('res.cloudinary.com');
 }
 
-module.exports = { uploadUrlToCloudinary, isCloudinaryUrl };
+export { uploadUrlToCloudinary, isCloudinaryUrl };
