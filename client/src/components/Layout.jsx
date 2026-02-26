@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -18,6 +18,13 @@ import { useAuth } from '../contexts/AuthContext';
 import { useAccounts } from '../contexts/AccountContext';
 import { creditsApi } from '../utils/api';
 
+// How often to passively refresh credits in the background
+const CREDITS_POLL_MS = 5 * 60 * 1000; // 5 minutes (was 60s)
+
+// How long to wait after window focus before re-fetching
+// Prevents hammering the API when users switch tabs rapidly
+const CREDITS_FOCUS_DEBOUNCE_MS = 3000; // 3 seconds
+
 const Layout = ({ children }) => {
   const { user, logout } = useAuth();
   const { permissions } = useAccounts();
@@ -28,40 +35,74 @@ const Layout = ({ children }) => {
   const [creditBalance, setCreditBalance] = useState(null);
   const [creditScope, setCreditScope] = useState('personal');
 
+  // Refs to manage debounce and mount state without causing re-renders
+  const mountedRef = useRef(true);
+  const focusDebounceRef = useRef(null);
+  const lastFetchRef = useRef(0);
+
   useEffect(() => {
-    let mounted = true;
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!user?.id) {
+      setCreditBalance(null);
+      setCreditScope('personal');
+      return;
+    }
 
     const fetchCredits = async () => {
+      // Skip if fetched very recently (handles rapid focus/visibility events)
+      const now = Date.now();
+      if (now - lastFetchRef.current < 10000) return; // 10s minimum between fetches
+      lastFetchRef.current = now;
+
       try {
         const response = await creditsApi.balance();
         const payload = response?.data || {};
-        const parsedBalance = Number.parseFloat(payload.balance ?? payload.creditsRemaining ?? '0');
+        const parsedBalance = Number.parseFloat(
+          payload.balance ?? payload.creditsRemaining ?? '0'
+        );
 
-        if (!mounted) return;
+        if (!mountedRef.current) return;
         setCreditBalance(Number.isFinite(parsedBalance) ? parsedBalance : 0);
         setCreditScope(payload.scope || payload.source || 'personal');
       } catch {
-        if (!mounted) return;
+        if (!mountedRef.current) return;
         setCreditBalance(null);
         setCreditScope('personal');
       }
     };
 
-    if (!user?.id) {
-      setCreditBalance(null);
-      setCreditScope('personal');
-      return () => {
-        mounted = false;
-      };
-    }
-
+    // Initial fetch on mount — no debounce
     fetchCredits();
 
-    const interval = setInterval(fetchCredits, 60000);
-    const onWindowFocus = () => fetchCredits();
-    const onVisibilityChange = () => {
+    // Poll every 5 minutes (only if tab is visible)
+    const interval = setInterval(() => {
       if (document.visibilityState === 'visible') {
         fetchCredits();
+      }
+    }, CREDITS_POLL_MS);
+
+    // Debounced focus handler — waits 3s after focus before fetching
+    // so rapid tab-switching doesn't spam the API
+    const onWindowFocus = () => {
+      clearTimeout(focusDebounceRef.current);
+      focusDebounceRef.current = setTimeout(() => {
+        if (mountedRef.current) fetchCredits();
+      }, CREDITS_FOCUS_DEBOUNCE_MS);
+    };
+
+    // Visibility change — only fetch when becoming visible after being hidden
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        clearTimeout(focusDebounceRef.current);
+        focusDebounceRef.current = setTimeout(() => {
+          if (mountedRef.current) fetchCredits();
+        }, CREDITS_FOCUS_DEBOUNCE_MS);
       }
     };
 
@@ -69,8 +110,8 @@ const Layout = ({ children }) => {
     document.addEventListener('visibilitychange', onVisibilityChange);
 
     return () => {
-      mounted = false;
       clearInterval(interval);
+      clearTimeout(focusDebounceRef.current);
       window.removeEventListener('focus', onWindowFocus);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
@@ -155,7 +196,9 @@ const Layout = ({ children }) => {
                 <Shield className="h-4 w-4" />
                 Role
               </div>
-              <p className="text-lg font-semibold text-gray-900 mt-1 capitalize">{permissions?.role || 'viewer'}</p>
+              <p className="text-lg font-semibold text-gray-900 mt-1 capitalize">
+                {permissions?.role || 'viewer'}
+              </p>
             </div>
           )}
         </div>
@@ -174,7 +217,7 @@ const Layout = ({ children }) => {
             <div className="flex items-center space-x-4 ml-auto">
               <div className="relative">
                 <button
-                  onClick={() => setIsUserMenuOpen((value) => !value)}
+                  onClick={() => setIsUserMenuOpen((v) => !v)}
                   className="flex items-center space-x-2 px-3 py-2 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50"
                 >
                   <span className="hidden sm:block">{user?.email || 'User'}</span>
@@ -200,9 +243,7 @@ const Layout = ({ children }) => {
           </div>
         </header>
 
-        <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-auto">
-          {children}
-        </main>
+        <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-auto">{children}</main>
       </div>
     </div>
   );

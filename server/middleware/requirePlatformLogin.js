@@ -1,170 +1,268 @@
 import jwt from 'jsonwebtoken';
 import axios from 'axios';
-import { query } from '../config/database.js';
+import { pool } from '../config/database.js';
+import { setAuthCookies, clearAuthCookies } from '../utils/cookieUtils.js';
+import dotenv from 'dotenv';
+dotenv.config({ quiet: true });
 
-const NEW_PLATFORM_API_URL = process.env.NEW_PLATFORM_API_URL || 'http://localhost:3000/api';
-const IS_PRODUCTION = process.env.NODE_ENV === 'production';
-const PLATFORM_URL = process.env.PLATFORM_URL || (IS_PRODUCTION ? 'https://suitegenie.in' : 'http://localhost:5173');
-const CLIENT_URL = process.env.CLIENT_URL || (IS_PRODUCTION ? 'https://social.suitegenie.in' : 'http://localhost:5176');
+// Increased from 30s → 5 min default. Override via AUTH_CACHE_TTL_MS in .env
+const AUTH_CACHE_TTL_MS = Number(process.env.AUTH_CACHE_TTL_MS || 300000);
 
-const isApiRequest = (req) => {
-  const accept = req.headers.accept || '';
-  return (
-    accept.includes('application/json') ||
-    req.originalUrl.startsWith('/api/') ||
-    req.originalUrl.startsWith('/auth/')
-  );
-};
+const platformUserCache = new Map();
+const linkedinAuthCache = new Map();
+const PLATFORM_API_BASE_URL = process.env.NEW_PLATFORM_API_URL || 'http://localhost:3000/api';
 
-const redirectToPlatformLogin = (req, res) => {
-  const currentUrl = `${CLIENT_URL}${req.originalUrl}`;
-  const loginUrl = `${PLATFORM_URL}/login?redirect=${encodeURIComponent(currentUrl)}`;
-  return res.redirect(loginUrl);
-};
-
-const parseMemberships = (payload) => {
-  const memberships = Array.isArray(payload?.teamMemberships) ? payload.teamMemberships : [];
-  if (memberships.length > 0) {
-    return memberships
-      .filter((item) => item?.teamId || item?.team_id)
-      .map((item) => ({
-        teamId: item.teamId || item.team_id,
-        role: item.role || 'viewer',
-        status: item.status || 'active',
-      }));
+const getCacheValue = (cache, key) => {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    cache.delete(key);
+    return null;
   }
-  if (payload?.teamId || payload?.team_id) {
-    return [
-      {
-        teamId: payload.teamId || payload.team_id,
-        role: payload.role || 'viewer',
-        status: 'active',
-      },
-    ];
-  }
-  return [];
+  return entry.value;
 };
 
-const hydrateTeamFromDatabase = async (userId) => {
-  let result;
-  try {
-    result = await query(
-      `SELECT team_id, role
-       FROM team_members
-       WHERE user_id = $1 AND status = 'active'
-       ORDER BY invited_at ASC
-       LIMIT 1`,
-      [userId]
+const setCacheValue = (cache, key, value) => {
+  cache.set(key, {
+    value,
+    expiresAt: Date.now() + AUTH_CACHE_TTL_MS,
+  });
+};
+
+const extractCookieValue = (setCookieHeader, cookieName) => {
+  if (!Array.isArray(setCookieHeader)) return null;
+  const targetPrefix = `${cookieName}=`;
+  const rawCookie = setCookieHeader.find((cookie) => String(cookie).startsWith(targetPrefix));
+  if (!rawCookie) return null;
+  return rawCookie.slice(targetPrefix.length).split(';')[0] || null;
+};
+
+const applyPlatformRefreshedAuthCookies = (res, setCookieHeader) => {
+  const newAccessToken = extractCookieValue(setCookieHeader, 'accessToken');
+  if (!newAccessToken) return null;
+  const newRefreshToken = extractCookieValue(setCookieHeader, 'refreshToken');
+  setAuthCookies(res, newAccessToken, newRefreshToken || null);
+  return newAccessToken;
+};
+
+const buildPlatformRefreshHeaders = (req) => {
+  const refreshToken = req.cookies?.refreshToken;
+  const csrfToken = req.cookies?._csrf || req.headers['x-csrf-token'];
+  const cookieParts = [`refreshToken=${refreshToken}`];
+  const headers = {};
+  if (csrfToken) {
+    cookieParts.push(`_csrf=${csrfToken}`);
+    headers['x-csrf-token'] = csrfToken;
+  }
+  headers.Cookie = cookieParts.join('; ');
+  return headers;
+};
+
+export async function requirePlatformLogin(req, res, next) {
+  if (req.isInternal) {
+    return next();
+  }
+
+  function isApiRequest(req) {
+    const accept = req.headers['accept'] || '';
+    const xrw = req.headers['x-requested-with'] || '';
+    return (
+      accept.includes('application/json') ||
+      xrw === 'XMLHttpRequest' ||
+      req.originalUrl.startsWith('/api/') ||
+      req.originalUrl.startsWith('/auth/')
     );
-  } catch {
-    return { teamId: null, role: 'viewer' };
   }
 
-  if (!result.rows[0]) {
-    return { teamId: null, role: 'viewer' };
-  }
-
-  return {
-    teamId: result.rows[0].team_id,
-    role: result.rows[0].role || 'viewer',
-  };
-};
-
-export const requirePlatformLogin = async (req, res, next) => {
   try {
+    // 1. Get token from cookie or header
     let token = req.cookies?.accessToken;
-
     if (!token) {
-      const authHeader = req.headers.authorization || '';
-      token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+      const authHeader = req.headers['authorization'];
+      token = authHeader && authHeader.split(' ')[1];
     }
 
+    // 2. If no token, try refresh
     if (!token && req.cookies?.refreshToken) {
       try {
         const refreshResponse = await axios.post(
-          `${NEW_PLATFORM_API_URL}/auth/refresh`,
+          `${PLATFORM_API_BASE_URL}/auth/refresh`,
           {},
           {
-            headers: {
-              Cookie: `refreshToken=${req.cookies.refreshToken}`,
-            },
+            headers: buildPlatformRefreshHeaders(req),
             withCredentials: true,
-            timeout: 10000,
           }
         );
-
-        const setCookie = refreshResponse.headers['set-cookie'] || [];
-        const accessCookie = setCookie.find((entry) => entry.startsWith('accessToken='));
-
-        if (accessCookie) {
-          token = accessCookie.split('accessToken=')[1].split(';')[0];
-          res.cookie('accessToken', token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-            maxAge: 15 * 60 * 1000,
-            ...(process.env.NODE_ENV === 'production' && process.env.COOKIE_DOMAIN
-              ? { domain: process.env.COOKIE_DOMAIN }
-              : {}),
-          });
+        if (refreshResponse.status !== 200) {
+          clearAuthCookies(res);
+          if (isApiRequest(req)) {
+            return res.status(401).json({ error: 'Unauthorized: refresh failed' });
+          } else {
+            const currentUrl = `${process.env.CLIENT_URL || 'http://localhost:5175'}${req.originalUrl}`;
+            return res.redirect(
+              `${process.env.PLATFORM_URL || 'http://localhost:3000'}/login?redirect=${encodeURIComponent(currentUrl)}`
+            );
+          }
+        }
+        const setCookieHeader = refreshResponse.headers['set-cookie'];
+        if (setCookieHeader) {
+          const newToken = applyPlatformRefreshedAuthCookies(res, setCookieHeader);
+          if (newToken) {
+            token = newToken;
+          } else {
+            if (isApiRequest(req)) {
+              return res.status(401).json({ error: 'Unauthorized: no access token after refresh' });
+            } else {
+              const currentUrl = `${process.env.CLIENT_URL || 'http://localhost:5175'}${req.originalUrl}`;
+              return res.redirect(
+                `${process.env.PLATFORM_URL || 'http://localhost:3000'}/login?redirect=${encodeURIComponent(currentUrl)}`
+              );
+            }
+          }
         }
       } catch {
-        // Continue and fail below if token still missing.
+        clearAuthCookies(res);
+        if (isApiRequest(req)) {
+          return res.status(401).json({ error: 'Unauthorized: refresh failed' });
+        } else {
+          const currentUrl = `${process.env.CLIENT_URL || 'http://localhost:5175'}${req.originalUrl}`;
+          return res.redirect(
+            `${process.env.PLATFORM_URL || 'http://localhost:3000'}/login?redirect=${encodeURIComponent(currentUrl)}`
+          );
+        }
       }
     }
 
+    // 3. If still no token, return 401
     if (!token) {
       if (isApiRequest(req)) {
         return res.status(401).json({ error: 'Unauthorized: no token' });
+      } else {
+        const currentUrl = `${process.env.CLIENT_URL || 'http://localhost:5175'}${req.originalUrl}`;
+        return res.redirect(
+          `${process.env.PLATFORM_URL || 'http://localhost:3000'}/login?redirect=${encodeURIComponent(currentUrl)}`
+        );
       }
-      return redirectToPlatformLogin(req, res);
     }
 
+    // 4. Verify JWT
     let decoded;
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
-    } catch {
-      if (isApiRequest(req)) {
-        return res.status(401).json({ error: 'Unauthorized: invalid token' });
+    } catch (jwtError) {
+      if (jwtError.name === 'TokenExpiredError' && req.cookies?.refreshToken) {
+        try {
+          const refreshResponse = await axios.post(
+            `${PLATFORM_API_BASE_URL}/auth/refresh`,
+            {},
+            {
+              headers: buildPlatformRefreshHeaders(req),
+              withCredentials: true,
+            }
+          );
+          const setCookieHeader = refreshResponse.headers['set-cookie'];
+          if (setCookieHeader) {
+            const newToken = applyPlatformRefreshedAuthCookies(res, setCookieHeader);
+            if (newToken) {
+              decoded = jwt.verify(newToken, process.env.JWT_SECRET);
+              token = newToken;
+            } else {
+              throw new Error('No access token in Platform refresh response');
+            }
+          }
+        } catch {
+          clearAuthCookies(res);
+          if (isApiRequest(req)) {
+            return res.status(401).json({ error: 'Unauthorized: refresh failed' });
+          } else {
+            const currentUrl = `${process.env.CLIENT_URL || 'http://localhost:5175'}${req.originalUrl}`;
+            return res.redirect(
+              `${process.env.PLATFORM_URL || 'http://localhost:3000'}/login?redirect=${encodeURIComponent(currentUrl)}`
+            );
+          }
+        }
+      } else {
+        if (isApiRequest(req)) {
+          return res.status(401).json({ error: 'Unauthorized: invalid token' });
+        } else {
+          const currentUrl = `${process.env.CLIENT_URL || 'http://localhost:5175'}${req.originalUrl}`;
+          return res.redirect(
+            `${process.env.PLATFORM_URL || 'http://localhost:3000'}/login?redirect=${encodeURIComponent(currentUrl)}`
+          );
+        }
       }
-      return redirectToPlatformLogin(req, res);
     }
 
-    let platformUserPayload = {};
-    try {
-      const meResponse = await axios.get(`${NEW_PLATFORM_API_URL}/auth/me`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-        timeout: 10000,
-      });
-      platformUserPayload = meResponse.data || {};
-    } catch {
-      platformUserPayload = {};
+    // 5. Get user info from platform (with 5-min cache)
+    const platformCacheKey = `${decoded.userId}:${decoded.email || ''}`;
+    const cachedPlatformUser = getCacheValue(platformUserCache, platformCacheKey);
+
+    if (cachedPlatformUser) {
+      req.user = {
+        id: decoded.userId,
+        email: decoded.email,
+        ...cachedPlatformUser,
+      };
+    } else {
+      try {
+        const response = await axios.get(
+          `${process.env.NEW_PLATFORM_API_URL || 'http://localhost:3000/api'}/auth/me`,
+          {
+            headers: { Authorization: `Bearer ${token}` },
+            timeout: 8000,
+          }
+        );
+        const userPayload = response.data || {};
+        setCacheValue(platformUserCache, platformCacheKey, userPayload);
+        req.user = {
+          id: decoded.userId,
+          email: decoded.email,
+          ...userPayload,
+        };
+      } catch {
+        // Fallback to JWT-only user — non-fatal
+        req.user = {
+          id: decoded.userId,
+          email: decoded.email,
+        };
+      }
     }
 
-    const memberships = parseMemberships(platformUserPayload);
-    let primaryTeam = memberships.find((membership) => membership.status === 'active') || null;
+    // 6. Attach LinkedIn token (for cross-post status checks) — with 5-min cache
+    if (req.user?.id) {
+      try {
+        const linkedinCacheKey = req.user.id;
+        const cachedLinkedinAuth = getCacheValue(linkedinAuthCache, linkedinCacheKey);
+        let linkedinAuth = cachedLinkedinAuth;
 
-    if (!primaryTeam) {
-      primaryTeam = await hydrateTeamFromDatabase(decoded.userId);
+        if (!linkedinAuth) {
+          const { rows } = await pool.query(
+            `SELECT access_token, linkedin_user_id FROM linkedin_auth WHERE user_id = $1`,
+            [req.user.id]
+          );
+          linkedinAuth = rows[0] || null;
+          setCacheValue(linkedinAuthCache, linkedinCacheKey, linkedinAuth);
+        }
+
+        if (linkedinAuth?.access_token && linkedinAuth?.linkedin_user_id) {
+          req.user.linkedinAccessToken = linkedinAuth.access_token;
+          req.user.linkedinUrn = `urn:li:person:${linkedinAuth.linkedin_user_id}`;
+          req.user.linkedinUserId = linkedinAuth.linkedin_user_id;
+        }
+      } catch (err) {
+        console.error('[requirePlatformLogin] Failed to fetch LinkedIn token/URN:', err);
+      }
     }
 
-    req.platformAccessToken = token;
-    req.user = {
-      id: decoded.userId,
-      email: decoded.email,
-      ...platformUserPayload,
-      teamId: primaryTeam?.teamId || null,
-      role: primaryTeam?.role || 'viewer',
-      teamMemberships: memberships,
-    };
-
-    return next();
+    next();
   } catch (error) {
     if (isApiRequest(req)) {
-      return res.status(401).json({ error: 'Unauthorized', details: error.message });
+      return res.status(401).json({ error: 'Unauthorized: exception' });
+    } else {
+      const currentUrl = `${process.env.CLIENT_URL || 'http://localhost:5175'}${req.originalUrl}`;
+      return res.redirect(
+        `${process.env.PLATFORM_URL || 'http://localhost:3000'}/login?redirect=${encodeURIComponent(currentUrl)}`
+      );
     }
-    return redirectToPlatformLogin(req, res);
   }
-};
+}

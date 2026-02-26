@@ -1,14 +1,14 @@
 ﻿import { query } from './config/database.js';
-// Periodic cleanup of expired OAuth states
+
+// Periodic cleanup of expired OAuth states (every hour)
 setInterval(async () => {
   try {
     await query(`DELETE FROM oauth_state_store WHERE expires_at < NOW()`);
-    // Optionally log cleanup
-    // console.log('[oauthStateStore] Cleaned up expired states');
   } catch (err) {
     console.error('[oauthStateStore] Cleanup error:', err);
   }
-}, 60 * 60 * 1000); // every hour
+}, 60 * 60 * 1000);
+
 import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
@@ -37,10 +37,9 @@ import { logger } from './utils/logger.js';
 import { startScheduledPostWorker, stopScheduledPostWorker } from './services/scheduledPostWorker.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// Always load server/.env even when process is started from monorepo root.
 dotenv.config({ path: path.resolve(__dirname, '.env') });
-const app = express();
 
+const app = express();
 const PORT = Number.parseInt(process.env.PORT || '3006', 10);
 
 const allowedOrigins = [
@@ -108,7 +107,6 @@ app.get('/api/csrf-token', (_req, res) => {
   res.json({ csrfToken: 'dummy-csrf-token' });
 });
 
-
 app.use('/auth', authRoutes);
 app.use('/api/oauth', oauthRoutes);
 app.use('/api/threads', threadsRoutes);
@@ -150,17 +148,31 @@ app.use((error, req, res, _next) => {
 });
 
 const start = async () => {
-  await ensureSchema();
-  startScheduledPostWorker();
-
+  // START LISTENING IMMEDIATELY — don't block on schema migrations.
+  // Cold starts on Render/Railway used to wait for ensureSchema() before
+  // accepting any traffic, causing the first request to time out.
   app.listen(PORT, () => {
     logger.info(`Meta Genie server running on port ${PORT}`);
   });
+
+  // Run schema migrations and start worker in the background AFTER the
+  // server is already accepting requests.
+  try {
+    await ensureSchema();
+    logger.info('Meta Genie schema ready');
+    startScheduledPostWorker();
+  } catch (error) {
+    logger.error('Meta Genie schema migration failed — server is running but scheduled posts may not work', {
+      message: error.message,
+    });
+    // Do NOT exit — the server is already live and handling requests.
+    // Schema failures are usually transient (DB not ready yet).
+    // The worker can be started manually or on next deploy.
+  }
 };
 
 start().catch((error) => {
-  logger.error('Failed to start server', { message: error.message });
-  stopScheduledPostWorker();
+  logger.error('Failed to start Meta Genie server', { message: error.message });
   process.exit(1);
 });
 
