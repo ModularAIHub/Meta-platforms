@@ -1,16 +1,14 @@
 import express from 'express';
-import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import { query } from '../config/database.js';
 import { publishThreadsPost, publishThreadsThread } from '../services/threadsService.js';
-import { uploadUrlToCloudinary, isCloudinaryUrl } from '../utils/cloudinaryUpload.js';
+import { uploadUrlToCloudinary, uploadBufferToCloudinary, isCloudinaryUrl } from '../utils/cloudinaryUpload.js';
 import { logger } from '../utils/logger.js';
 
 const router = express.Router();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const uploadDir = path.resolve(__dirname, '..', 'uploads');
 const INTERNAL_CROSSPOST_MAX_MEDIA_ITEMS = 4;
 const INTERNAL_CROSSPOST_MAX_MEDIA_BYTES = 8 * 1024 * 1024;
 
@@ -106,18 +104,16 @@ const parseDataUrl = (value) => {
     extension: extMap[mimetype] || 'bin',
   };
 };
-
 const persistDataUrlMediaForThreads = async (value) => {
   const parsed = parseDataUrl(value);
   if (!parsed) return null;
 
-  await fs.mkdir(uploadDir, { recursive: true });
-  const filename = `${Date.now()}-${uuidv4()}.${parsed.extension}`;
-  const filePath = path.join(uploadDir, filename);
-  await fs.writeFile(filePath, parsed.buffer);
+  const uploaded = await uploadBufferToCloudinary(parsed.buffer, parsed.mimetype, 'threads');
+  const url = uploaded.secure_url || uploaded.url;
+  if (!url) throw new Error('Cloudinary upload returned no URL');
 
   return {
-    url: `/uploads/${filename}`,
+    url,
     mimetype: parsed.mimetype,
   };
 };
