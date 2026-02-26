@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import { query } from '../config/database.js';
 import { publishThreadsPost, publishThreadsThread } from '../services/threadsService.js';
+import { uploadUrlToCloudinary, isCloudinaryUrl } from '../utils/cloudinaryUpload.js';
 import { logger } from '../utils/logger.js';
 
 const router = express.Router();
@@ -134,7 +135,33 @@ const prepareThreadsCrossPostSingleMedia = async ({ mediaInputs = [] }) => {
 
   const first = normalized[0];
   try {
-    if (isHttpUrl(first) || first.startsWith('/uploads/')) {
+    let urlToUse = first;
+    // If not already a Cloudinary URL, upload it
+    if (isHttpUrl(first) && !isCloudinaryUrl(first)) {
+      const uploaded = await uploadUrlToCloudinary(first, 'threads');
+      urlToUse = uploaded.secure_url || uploaded.url;
+    }
+    if (isHttpUrl(urlToUse)) {
+      const lower = urlToUse.toLowerCase();
+      const isVideo = /\.(mp4|mov|m4v|webm|avi|mpeg|mpg)(\?|$)/i.test(lower);
+      return {
+        mediaUrls: [urlToUse],
+        contentType: isVideo ? 'video' : 'image',
+        mediaStatus: normalized.length > 1 ? 'posted_partial' : 'posted',
+        mediaCount: 1,
+      };
+    }
+
+    if (first.startsWith('/uploads/')) {
+      // Validate uploaded filename matches expected pattern: timestamp-uuid.ext
+      const filename = path.basename(first || '');
+      const allowedExt = '(jpg|jpeg|png|gif|webp|mp4|mov|m4v|webm|avi|mpeg|mpg)';
+      const uploadFilenameRe = new RegExp(`^\d{10,13}-[0-9a-fA-F-]{36}\.${allowedExt}$`, 'i');
+      if (!uploadFilenameRe.test(filename)) {
+        logger.warn('[internal/threads/cross-post] Ignoring suspicious uploads path', { first, filename });
+        return { mediaUrls: [], contentType: 'text', mediaStatus: 'text_only_unsupported', mediaCount: 0 };
+      }
+
       const lower = first.toLowerCase();
       const isVideo = /\.(mp4|mov|m4v|webm|avi|mpeg|mpg)(\?|$)/i.test(lower);
       return {

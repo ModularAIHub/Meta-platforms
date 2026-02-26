@@ -181,15 +181,29 @@ const normalizeCrossPostMedia = (value) => {
 
 const absolutizeSocialMediaUrlsForCrossPost = (mediaUrls = []) => {
   const baseUrl = String(process.env.SOCIAL_GENIE_URL || '').trim();
-  return normalizeCrossPostMedia(mediaUrls).map((item) => {
-    if (/^https?:\/\//i.test(item) || item.startsWith('data:')) {
-      return item;
-    }
-    if (item.startsWith('/') && baseUrl) {
-      return buildInternalServiceEndpoint(baseUrl, item);
-    }
-    return item;
-  });
+  return normalizeCrossPostMedia(mediaUrls)
+    .map((item) => {
+      if (/^https?:\/\//i.test(item) || item.startsWith('data:')) {
+        return item;
+      }
+
+      // Absolute internal path (starts with '/') -> resolve against baseUrl
+      if (item.startsWith('/')) {
+        if (baseUrl) return buildInternalServiceEndpoint(baseUrl, item);
+        // No base URL configured -> drop this item
+        return null;
+      }
+
+      // Relative path without leading slash (e.g., 'uploads/img.png')
+      if (baseUrl) {
+        const normalizedPath = `/${String(item).replace(/^\/+/, '')}`;
+        return buildInternalServiceEndpoint(baseUrl, normalizedPath);
+      }
+
+      // No base URL to resolve relative paths -> drop
+      return null;
+    })
+    .filter(Boolean);
 };
 
 const crossPostThreadsToXNow = async ({ userId, content, mediaDetected = false, mediaUrls = [] }) => {

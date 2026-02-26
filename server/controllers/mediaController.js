@@ -1,13 +1,19 @@
 ﻿import { v2 as cloudinary } from 'cloudinary';
 import { Readable } from 'stream';
 import multer from 'multer';
+import path from 'path';
 
-// ── Cloudinary config ────────────────────────────────────────────────────────
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key:    process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
-});
+// Lazy Cloudinary configuration (populate from env at request time)
+let cloudinaryConfigured = false;
+const configureCloudinary = () => {
+  if (cloudinaryConfigured) return;
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+  });
+  cloudinaryConfigured = true;
+};
 
 // ── Multer — memory storage only (no disk writes) ────────────────────────────
 const fileFilter = (_req, file, cb) => {
@@ -27,32 +33,67 @@ export const uploadMiddleware = multer({
 });
 
 // ── Upload buffer to Cloudinary ───────────────────────────────────────────────
+const sanitizeFilename = (name) => {
+  try {
+    if (!name) return null;
+    // get basename and strip extension
+    let base = path.basename(String(name));
+    base = base.replace(/\.[^/.]+$/, '');
+
+    // Replace any path separators, control chars and unsafe chars with hyphens
+    base = base.replace(/[\\/\\\\<>:\\"'`\s]+/g, '-');
+
+    // Remove anything that's not alphanumeric, dash or underscore
+    base = base.replace(/[^a-zA-Z0-9-_\.]/g, '');
+
+    // Collapse multiple hyphens/underscores
+    base = base.replace(/[-_]{2,}/g, '-');
+
+    // Trim leading/trailing punctuation
+    base = base.replace(/^[-_.]+|[-_.]+$/g, '');
+
+    // Limit length
+    if (base.length > 200) base = base.slice(0, 200);
+    return base || null;
+  } catch {
+    return null;
+  }
+};
+
 const uploadToCloudinary = (buffer, mimetype, originalName) => {
   return new Promise((resolve, reject) => {
+    // Ensure Cloudinary is configured with current env values
+    configureCloudinary();
     const isVideo = mimetype.startsWith('video/');
 
-    const stream = cloudinary.uploader.upload_stream(
-      {
-        resource_type: isVideo ? 'video' : 'image',
-        folder: 'suitegenie/social-genie',
-        use_filename: true,
-        unique_filename: true,
-        overwrite: false,
-        // Auto-optimize images for web delivery
-        ...(isVideo ? {} : {
-          transformation: [
-            { quality: 'auto', fetch_format: 'auto' }
-          ]
-        }),
-      },
-      (error, result) => {
-        if (error) {
-          console.error('[CLOUDINARY] Upload error:', error);
-          return reject(error);
-        }
-        resolve(result);
+    const filenameOverride = sanitizeFilename(originalName);
+
+    const uploadOptions = {
+      resource_type: isVideo ? 'video' : 'image',
+      folder: 'suitegenie/social-genie',
+      use_filename: true,
+      unique_filename: true,
+      overwrite: false,
+      // Auto-optimize images for web delivery
+      ...(isVideo ? {} : {
+        transformation: [
+          { quality: 'auto', fetch_format: 'auto' }
+        ]
+      }),
+    };
+
+    if (filenameOverride) {
+      // pass sanitized original name to Cloudinary so it can derive public_id
+      uploadOptions.filename_override = filenameOverride;
+    }
+
+    const stream = cloudinary.uploader.upload_stream(uploadOptions, (error, result) => {
+      if (error) {
+        console.error('[CLOUDINARY] Upload error:', error);
+        return reject(error);
       }
-    );
+      resolve(result);
+    });
 
     Readable.from(buffer).pipe(stream);
   });
@@ -105,11 +146,12 @@ export const uploadMedia = async (req, res) => {
       format: result.format || null,
     });
   } catch (error) {
-    console.error('[CLOUDINARY] Upload failed:', error?.message || error);
+    // Log full error server-side (avoid leaking provider internals to clients)
+    console.error('[CLOUDINARY] Upload failed:', { error, requestId: req?.id || null });
     return res.status(500).json({
       error: 'Failed to upload media',
       code: 'MEDIA_UPLOAD_FAILED',
-      details: error?.message || 'Unknown error',
+      details: 'Internal server error',
     });
   }
 };

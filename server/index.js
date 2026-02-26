@@ -97,7 +97,6 @@ app.get('/api/csrf-token', (_req, res) => {
   res.json({ csrfToken: 'dummy-csrf-token' });
 });
 
-app.use('/uploads', express.static(path.resolve(__dirname, 'uploads')));
 
 app.use('/auth', authRoutes);
 app.use('/api/oauth', oauthRoutes);

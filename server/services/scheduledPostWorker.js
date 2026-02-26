@@ -89,11 +89,28 @@ const normalizeCrossPostMedia = (value) => {
 
 const absolutizeSocialMediaUrlsForCrossPost = (mediaUrls = []) => {
   const baseUrl = String(process.env.SOCIAL_GENIE_URL || '').trim();
-  return normalizeCrossPostMedia(mediaUrls).map((item) => {
-    if (/^https?:\/\//i.test(item) || item.startsWith('data:')) return item;
-    if (item.startsWith('/') && baseUrl) return buildInternalServiceEndpoint(baseUrl, item);
-    return item;
-  });
+  return normalizeCrossPostMedia(mediaUrls)
+    .map((item) => {
+      if (/^https?:\/\//i.test(item) || item.startsWith('data:')) return item;
+
+      if (item.startsWith('/')) {
+        if (baseUrl) return buildInternalServiceEndpoint(baseUrl, item);
+        // baseUrl missing -> warn and drop this relative path
+        logger.warn('absolutizeSocialMediaUrlsForCrossPost: dropping relative path because SOCIAL_GENIE_URL is not configured', { item });
+        return null;
+      }
+
+      // Non-slash relative path (e.g., 'uploads/img.png')
+      if (baseUrl) {
+        const normalizedPath = `/${String(item).replace(/^\/+/, '')}`;
+        return buildInternalServiceEndpoint(baseUrl, normalizedPath);
+      }
+
+      // No baseUrl to resolve relative path -> drop and warn
+      logger.warn('absolutizeSocialMediaUrlsForCrossPost: dropping relative path because SOCIAL_GENIE_URL is not configured', { item });
+      return null;
+    })
+    .filter(Boolean);
 };
 
 const ensureMetadataColumnSupport = async () => {
