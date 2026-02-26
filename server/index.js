@@ -1,4 +1,15 @@
-﻿import express from 'express';
+﻿import { query } from './config/database.js';
+// Periodic cleanup of expired OAuth states
+setInterval(async () => {
+  try {
+    await query(`DELETE FROM oauth_state_store WHERE expires_at < NOW()`);
+    // Optionally log cleanup
+    // console.log('[oauthStateStore] Cleaned up expired states');
+  } catch (err) {
+    console.error('[oauthStateStore] Cleanup error:', err);
+  }
+}, 60 * 60 * 1000); // every hour
+import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';

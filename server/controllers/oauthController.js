@@ -146,7 +146,7 @@ export const connectInstagram = async (req, res) => {
   const returnUrl = ensureReturnUrl(req.query.returnUrl);
   const teamId = req.teamContext?.teamId || null;
 
-  const state = createOAuthState({
+  const state = await createOAuthState({
     platform: 'instagram',
     userId: req.user.id,
     teamId,
@@ -179,7 +179,7 @@ export const connectInstagram = async (req, res) => {
 export const instagramCallback = async (req, res) => {
   const { state, code, error, mock } = req.query;
 
-  const statePayload = state ? consumeOAuthState(state) : null;
+  const statePayload = state ? await consumeOAuthState(state) : null;
   if (!statePayload) {
     return redirectWithError(res, `${process.env.CLIENT_URL || 'http://localhost:5176'}/accounts`, 'invalid_state');
   }
@@ -314,7 +314,7 @@ export const connectThreads = async (req, res) => {
 
   console.log('[THREADS CONNECT] User:', { userId: req.user.id, teamId, returnUrl });
 
-  const state = createOAuthState({
+  const state = await createOAuthState({
     platform: 'threads',
     userId: req.user.id,
     teamId,
@@ -358,7 +358,7 @@ export const threadsCallback = async (req, res) => {
 
   console.log('[THREADS CALLBACK] Started', { state: state?.substring(0, 8), code: code?.substring(0, 8), error, mock });
 
-  const statePayload = state ? consumeOAuthState(state) : null;
+  const statePayload = state ? await consumeOAuthState(state) : null;
   if (!statePayload) {
     console.error('[THREADS CALLBACK] Invalid or expired state');
     return redirectWithError(res, `${process.env.CLIENT_URL || 'http://localhost:5176'}/accounts`, 'invalid_state');
@@ -537,7 +537,7 @@ export const connectYoutube = async (req, res) => {
   const returnUrl = ensureReturnUrl(req.query.returnUrl);
   const teamId = req.teamContext?.teamId || null;
 
-  const state = createOAuthState({
+  const state = await createOAuthState({
     platform: 'youtube',
     userId: req.user.id,
     teamId,
@@ -576,7 +576,7 @@ export const connectYoutube = async (req, res) => {
 export const youtubeCallback = async (req, res) => {
   const { state, code, error, mock } = req.query;
 
-  const statePayload = state ? consumeOAuthState(state) : null;
+  const statePayload = state ? await consumeOAuthState(state) : null;
   if (!statePayload) {
     return redirectWithError(res, `${process.env.CLIENT_URL || 'http://localhost:5176'}/accounts`, 'invalid_state');
   }
