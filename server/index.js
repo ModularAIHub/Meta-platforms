@@ -29,6 +29,7 @@ import analyticsRoutes from './routes/analytics.js';
 import aiRoutes from './routes/ai.js';
 import mediaRoutes from './routes/media.js';
 import creditsRoutes from './routes/credits.js';
+import crossPostStatusRoutes from './routes/crossPostStatus.js';
 
 import { requirePlatformLogin } from './middleware/requirePlatformLogin.js';
 import { resolveTeamContextMiddleware } from './middleware/resolveTeamContext.js';
@@ -121,6 +122,7 @@ app.use('/api/analytics', analyticsRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/media', mediaRoutes);
 app.use('/api/credits', creditsRoutes);
+app.use('/api/cross-post', crossPostStatusRoutes);
 
 app.get('/', (_req, res) => {
   res.json({

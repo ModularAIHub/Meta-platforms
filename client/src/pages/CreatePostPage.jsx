@@ -12,7 +12,7 @@ import {
   SlidersHorizontal,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { aiApi, mediaApi, postsApi } from '../utils/api';
+import { aiApi, crossPostApi, mediaApi, postsApi } from '../utils/api';
 import { useAccounts } from '../contexts/AccountContext';
 import {
   ENABLED_SOCIAL_PLATFORMS,
@@ -42,6 +42,16 @@ const THREADS_POST_MAX_CHARS = 500;
 const THREADS_AUTO_SPLIT_MAX_CHARS = 10000;
 const THREADS_MAX_CHAIN_POSTS = 30;
 const VIDEO_FILE_RE = /\.(mp4|mov|m4v|webm|avi|mpeg|mpg|mkv)(\?.*)?$/i;
+const CROSSPOST_REASON_LABELS = {
+  not_connected: 'Not connected',
+  token_expired: 'Reconnect required',
+  not_configured: 'Not configured',
+  service_unreachable: 'Service unavailable',
+  timeout: 'Status timeout',
+};
+
+const getCrossPostReasonLabel = (reason, fallback = 'Unavailable') =>
+  CROSSPOST_REASON_LABELS[String(reason || '').toLowerCase()] || fallback;
 
 const splitTextByLimit = (text, limit = THREADS_POST_MAX_CHARS) => {
   const normalized = String(text || '').trim();
@@ -109,7 +119,7 @@ const parseGeneratedThreadPosts = (rawText) => {
 };
 
 const CreatePostPage = () => {
-  const { accounts } = useAccounts();
+  const { accounts, permissions } = useAccounts();
 
   const [caption, setCaption] = useState('');
   const [aiPrompt, setAiPrompt] = useState('');
@@ -131,6 +141,15 @@ const CreatePostPage = () => {
   const [postThreadsToX, setPostThreadsToX] = useState(false);
   const [postThreadsToLinkedIn, setPostThreadsToLinkedIn] = useState(false);
   const [optimizeCrossPost, setOptimizeCrossPost] = useState(true);
+  const [crossPostStatus, setCrossPostStatus] = useState({
+    loading: false,
+    loaded: false,
+    teamMode: false,
+    targets: {
+      x: { connected: false, reason: 'not_connected', available: false, restriction: null },
+      linkedin: { connected: false, reason: 'not_connected', available: false, restriction: null },
+    },
+  });
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showAiAssist, setShowAiAssist] = useState(false);
 
@@ -172,8 +191,81 @@ const CreatePostPage = () => {
     if (!selectedPlatforms.threads) {
       setPostThreadsToX(false);
       setPostThreadsToLinkedIn(false);
+      setCrossPostStatus({
+        loading: false,
+        loaded: false,
+        teamMode: false,
+        targets: {
+          x: { connected: false, reason: 'not_connected', available: false, restriction: null },
+          linkedin: { connected: false, reason: 'not_connected', available: false, restriction: null },
+        },
+      });
     }
   }, [selectedPlatforms.threads]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const loadCrossPostStatus = async () => {
+      if (!selectedPlatforms.threads) {
+        return;
+      }
+
+      setCrossPostStatus((prev) => ({ ...prev, loading: true }));
+
+      try {
+        const response = await crossPostApi.status();
+        if (!mounted) return;
+
+        const payload = response.data || {};
+        const targets = payload.targets || {};
+
+        setCrossPostStatus({
+          loading: false,
+          loaded: true,
+          teamMode: payload.teamMode === true,
+          targets: {
+            x: {
+              connected: targets?.x?.connected === true,
+              reason: targets?.x?.reason || (targets?.x?.connected === true ? null : 'not_connected'),
+              available: targets?.x?.available === true,
+              restriction: targets?.x?.restriction || null,
+            },
+            linkedin: {
+              connected: targets?.linkedin?.connected === true,
+              reason:
+                targets?.linkedin?.reason ||
+                (targets?.linkedin?.connected === true ? null : 'not_connected'),
+              available: targets?.linkedin?.available === true,
+              restriction: targets?.linkedin?.restriction || null,
+            },
+          },
+        });
+      } catch {
+        if (!mounted) return;
+        setCrossPostStatus({
+          loading: false,
+          loaded: true,
+          teamMode: Boolean(permissions?.teamId),
+          targets: {
+            x: { connected: false, reason: 'service_unreachable', available: false, restriction: null },
+            linkedin: {
+              connected: false,
+              reason: 'service_unreachable',
+              available: false,
+              restriction: null,
+            },
+          },
+        });
+      }
+    };
+
+    loadCrossPostStatus();
+
+    return () => {
+      mounted = false;
+    };
+  }, [selectedPlatforms.threads, permissions?.teamId]);
 
   const isThreadsThread = selectedPlatforms.threads && threadsType === 'thread';
   const isOnlyThreadsSingle =
@@ -216,6 +308,53 @@ const CreatePostPage = () => {
     }
     return Math.max(1, Math.ceil(caption.trim().length / THREADS_POST_MAX_CHARS));
   }, [threadsTextAutoSplitEnabled, caption]);
+
+  const willAutoSplitThreadsChain =
+    threadsTextAutoSplitEnabled && caption.trim().length > THREADS_POST_MAX_CHARS;
+  const threadsCrossPostBlockedByMode = isThreadsThread || willAutoSplitThreadsChain;
+  const threadsCrossPostTeamBlocked = crossPostStatus.teamMode === true;
+  const xCrossPostAvailable =
+    selectedPlatforms.threads &&
+    !threadsCrossPostBlockedByMode &&
+    !threadsCrossPostTeamBlocked &&
+    crossPostStatus.targets.x.available === true;
+  const linkedinCrossPostAvailable =
+    selectedPlatforms.threads &&
+    !threadsCrossPostBlockedByMode &&
+    !threadsCrossPostTeamBlocked &&
+    crossPostStatus.targets.linkedin.available === true;
+  const hasThreadsCrossPostTargetsSelected = Boolean(
+    selectedPlatforms.threads && (postThreadsToX || postThreadsToLinkedIn)
+  );
+  const xToggleDisabled = crossPostStatus.loading || !xCrossPostAvailable;
+  const linkedinToggleDisabled = crossPostStatus.loading || !linkedinCrossPostAvailable;
+  const xCrossPostStatusText = crossPostStatus.loading
+    ? 'Checking...'
+    : threadsCrossPostTeamBlocked
+      ? 'Unavailable in team mode'
+      : threadsCrossPostBlockedByMode
+        ? 'Single Threads post only'
+        : xCrossPostAvailable
+          ? 'Connected'
+          : getCrossPostReasonLabel(crossPostStatus.targets.x.reason);
+  const linkedinCrossPostStatusText = crossPostStatus.loading
+    ? 'Checking...'
+    : threadsCrossPostTeamBlocked
+      ? 'Unavailable in team mode'
+      : threadsCrossPostBlockedByMode
+        ? 'Single Threads post only'
+        : linkedinCrossPostAvailable
+          ? 'Connected'
+          : getCrossPostReasonLabel(crossPostStatus.targets.linkedin.reason);
+
+  useEffect(() => {
+    if (postThreadsToX && !xCrossPostAvailable) {
+      setPostThreadsToX(false);
+    }
+    if (postThreadsToLinkedIn && !linkedinCrossPostAvailable) {
+      setPostThreadsToLinkedIn(false);
+    }
+  }, [postThreadsToX, postThreadsToLinkedIn, xCrossPostAvailable, linkedinCrossPostAvailable]);
 
   const mediaRequiredNow =
     postMode === 'now' &&
@@ -365,22 +504,19 @@ Rules:
     const normalizedThreadPosts = threadsPosts
       .map((post) => post.trim())
       .filter(Boolean);
-    const hasThreadsCrossPostTargets = Boolean(
-      selectedPlatforms.threads && (postThreadsToX || postThreadsToLinkedIn)
-    );
 
     return {
       caption,
       mediaUrls: mediaUrls.map((item) => item.url),
       platforms: activePlatforms,
-      crossPost: activePlatforms.length > 1,
+      crossPost: activePlatforms.length > 1 || hasThreadsCrossPostTargetsSelected,
       instagramContentType: instagramType,
       youtubeContentType: youtubeType,
       threadsContentType: threadsType,
       threadsPosts: isThreadsThread ? normalizedThreadPosts : [],
       postNow: postMode === 'now',
       scheduledFor: postMode === 'schedule' && scheduledFor ? new Date(scheduledFor).toISOString() : null,
-      ...(hasThreadsCrossPostTargets && {
+      ...(hasThreadsCrossPostTargetsSelected && {
         crossPostTargets: {
           x: postThreadsToX,
           linkedin: postThreadsToLinkedIn,
@@ -480,6 +616,17 @@ Rules:
           .join(', ')} first`
       );
       return;
+    }
+
+    if (selectedPlatforms.threads) {
+      if (postThreadsToX && !xCrossPostAvailable) {
+        toast.error('X cross-post is not available for the current Threads post settings.');
+        return;
+      }
+      if (postThreadsToLinkedIn && !linkedinCrossPostAvailable) {
+        toast.error('LinkedIn cross-post is not available for the current Threads post settings.');
+        return;
+      }
     }
 
     const preflightOk = await runPreflightChecks({ showSuccessToast: false });
@@ -876,24 +1023,39 @@ Rules:
             </p>
             <p className="text-xs text-violet-800">
               Runs {postMode === 'schedule' ? 'when the scheduled Threads post publishes' : 'after the Threads post is published'}.
-              Thread chains are skipped for X/LinkedIn cross-posting.
+              Cross-post currently supports only single-post Threads publishing.
             </p>
             <label className="flex items-center justify-between gap-3 text-sm text-violet-900">
-              <span>Cross-post Threads post to X</span>
+              <span>Cross-post Threads post to X ({xCrossPostStatusText})</span>
               <input
                 type="checkbox"
                 checked={postThreadsToX}
-                onChange={() => setPostThreadsToX((value) => !value)}
+                disabled={xToggleDisabled}
+                onChange={() => {
+                  if (xToggleDisabled) return;
+                  setPostThreadsToX((value) => !value);
+                }}
               />
             </label>
             <label className="flex items-center justify-between gap-3 text-sm text-violet-900">
-              <span>Cross-post Threads post to LinkedIn</span>
+              <span>Cross-post Threads post to LinkedIn ({linkedinCrossPostStatusText})</span>
               <input
                 type="checkbox"
                 checked={postThreadsToLinkedIn}
-                onChange={() => setPostThreadsToLinkedIn((value) => !value)}
+                disabled={linkedinToggleDisabled}
+                onChange={() => {
+                  if (linkedinToggleDisabled) return;
+                  setPostThreadsToLinkedIn((value) => !value);
+                }}
               />
             </label>
+            {(threadsCrossPostBlockedByMode || threadsCrossPostTeamBlocked) && (
+              <p className="text-xs text-violet-800">
+                {threadsCrossPostTeamBlocked
+                  ? 'Team mode uses personal-only policy for Threads cross-post. Switch to personal mode to enable X/LinkedIn targets.'
+                  : 'Switch to single Threads post mode to enable X/LinkedIn cross-post.'}
+              </p>
+            )}
             {(postThreadsToX || postThreadsToLinkedIn) && (
               <label className="flex items-center justify-between gap-3 text-xs text-violet-800">
                 <span>Optimize formatting for cross-post targets</span>
@@ -916,7 +1078,7 @@ Rules:
           </p>
           <p>
             <span className="font-medium text-gray-800">Cross-post:</span>{' '}
-            {activePlatforms.length > 1 ? 'Yes' : 'No'}
+            {activePlatforms.length > 1 || hasThreadsCrossPostTargetsSelected ? 'Yes' : 'No'}
           </p>
           <p>
             <span className="font-medium text-gray-800">Media files:</span> {mediaUrls.length}

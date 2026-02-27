@@ -177,6 +177,10 @@ export const creditsApi = {
   refund: (payload) => api.post('/api/credits/refund', payload),
 };
 
+export const crossPostApi = {
+  status: () => api.get('/api/cross-post/status'),
+};
+
 export const aiApi = {
   generateCaption: (payload) => api.post('/api/ai/caption', payload),
 };
