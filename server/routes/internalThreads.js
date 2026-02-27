@@ -35,6 +35,7 @@ const ensureInternalRequest = (req, res, next) => {
 };
 
 const resolvePlatformUserId = (req) => String(req.headers['x-platform-user-id'] || '').trim();
+const resolvePlatformTeamId = (req) => String(req.headers['x-platform-team-id'] || '').trim() || null;
 
 const getPersonalThreadsAccount = async (platformUserId) => {
   if (!platformUserId) return null;
@@ -49,6 +50,68 @@ const getPersonalThreadsAccount = async (platformUserId) => {
      ORDER BY updated_at DESC
      LIMIT 1`,
     [platformUserId]
+  );
+
+  return result.rows[0] || null;
+};
+
+const getPersonalThreadsAccountById = async (platformUserId, targetAccountId) => {
+  if (!platformUserId || !targetAccountId) return null;
+
+  const result = await query(
+    `SELECT id, user_id, team_id, account_id, account_username, account_display_name, profile_image_url, access_token, token_expires_at, metadata
+     FROM social_connected_accounts
+     WHERE user_id = $1
+       AND team_id IS NULL
+       AND platform = 'threads'
+       AND is_active = true
+       AND id::text = $2::text
+     LIMIT 1`,
+    [platformUserId, String(targetAccountId)]
+  );
+
+  return result.rows[0] || null;
+};
+
+const getTeamThreadsAccountForMember = async (platformUserId, platformTeamId) => {
+  if (!platformUserId || !platformTeamId) return null;
+
+  const result = await query(
+    `SELECT sca.id, sca.user_id, sca.team_id, sca.account_id, sca.account_username, sca.account_display_name,
+            sca.profile_image_url, sca.access_token, sca.token_expires_at, sca.metadata
+     FROM social_connected_accounts sca
+     INNER JOIN team_members tm
+       ON tm.team_id::text = sca.team_id::text
+      AND tm.user_id = $1
+      AND tm.status = 'active'
+     WHERE sca.team_id::text = $2::text
+       AND sca.platform = 'threads'
+       AND sca.is_active = true
+     ORDER BY sca.updated_at DESC NULLS LAST, sca.id DESC
+     LIMIT 1`,
+    [platformUserId, String(platformTeamId)]
+  );
+
+  return result.rows[0] || null;
+};
+
+const getTeamThreadsAccountForMemberById = async (platformUserId, platformTeamId, targetAccountId) => {
+  if (!platformUserId || !platformTeamId || !targetAccountId) return null;
+
+  const result = await query(
+    `SELECT sca.id, sca.user_id, sca.team_id, sca.account_id, sca.account_username, sca.account_display_name,
+            sca.profile_image_url, sca.access_token, sca.token_expires_at, sca.metadata
+     FROM social_connected_accounts sca
+     INNER JOIN team_members tm
+       ON tm.team_id::text = sca.team_id::text
+      AND tm.user_id = $1
+      AND tm.status = 'active'
+     WHERE sca.team_id::text = $2::text
+       AND sca.platform = 'threads'
+       AND sca.is_active = true
+       AND sca.id::text = $3::text
+     LIMIT 1`,
+    [platformUserId, String(platformTeamId), String(targetAccountId)]
   );
 
   return result.rows[0] || null;
@@ -391,8 +454,79 @@ router.get('/status', ensureInternalRequest, async (req, res) => {
   }
 });
 
+router.get('/targets', ensureInternalRequest, async (req, res) => {
+  const platformUserId = resolvePlatformUserId(req);
+  const platformTeamId = resolvePlatformTeamId(req);
+  const excludeAccountId = String(req.query?.excludeAccountId || '').trim() || null;
+
+  if (!platformUserId) {
+    return res.status(400).json({
+      error: 'x-platform-user-id is required',
+      code: 'PLATFORM_USER_ID_REQUIRED',
+    });
+  }
+
+  try {
+    let rows = [];
+    if (platformTeamId) {
+      const result = await query(
+        `SELECT sca.id, sca.account_id, sca.account_username, sca.account_display_name, sca.profile_image_url
+         FROM social_connected_accounts sca
+         INNER JOIN team_members tm
+           ON tm.team_id::text = sca.team_id::text
+          AND tm.user_id = $1
+          AND tm.status = 'active'
+         WHERE sca.team_id::text = $2::text
+           AND sca.platform = 'threads'
+           AND sca.is_active = true
+         ORDER BY sca.updated_at DESC NULLS LAST, sca.id DESC`,
+        [platformUserId, String(platformTeamId)]
+      );
+      rows = result.rows;
+    } else {
+      const result = await query(
+        `SELECT id, account_id, account_username, account_display_name, profile_image_url
+         FROM social_connected_accounts
+         WHERE user_id = $1
+           AND team_id IS NULL
+           AND platform = 'threads'
+           AND is_active = true
+         ORDER BY updated_at DESC NULLS LAST, id DESC`,
+        [platformUserId]
+      );
+      rows = result.rows;
+    }
+
+    const accounts = rows
+      .map((row) => ({
+        id: row?.id !== undefined && row?.id !== null ? String(row.id) : null,
+        platform: 'threads',
+        accountId: row?.account_id ? String(row.account_id) : null,
+        username: row?.account_username ? String(row.account_username) : null,
+        displayName:
+          String(row?.account_display_name || '').trim() ||
+          (row?.account_username ? `@${String(row.account_username)}` : 'Threads account'),
+        avatar: row?.profile_image_url || null,
+      }))
+      .filter((row) => row.id && row.id !== String(excludeAccountId || ''));
+
+    return res.json({ success: true, accounts });
+  } catch (error) {
+    logger.error('[internal/threads/targets] Failed to list Threads targets', {
+      userId: platformUserId,
+      teamId: platformTeamId,
+      error: error?.message || String(error),
+    });
+    return res.status(500).json({
+      error: 'Failed to fetch Threads targets',
+      code: 'THREADS_TARGETS_FAILED',
+    });
+  }
+});
+
 router.post('/cross-post', ensureInternalRequest, async (req, res) => {
   const platformUserId = resolvePlatformUserId(req);
+  const platformTeamId = resolvePlatformTeamId(req);
   const {
     postMode = 'single',
     content = '',
@@ -400,6 +534,7 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
     mediaDetected = false,
     media = [],
     mediaUrls = [],
+    targetAccountId = null,
   } = req.body || {};
 
   if (!platformUserId) {
@@ -432,7 +567,25 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
   }
 
   try {
-    const account = await getPersonalThreadsAccount(platformUserId);
+    let account = null;
+    if (targetAccountId) {
+      if (platformTeamId) {
+        account = await getTeamThreadsAccountForMemberById(platformUserId, platformTeamId, targetAccountId);
+      } else {
+        account = await getPersonalThreadsAccountById(platformUserId, targetAccountId);
+      }
+
+      if (!account) {
+        return res.status(404).json({
+          error: 'Target Threads account not found or inaccessible',
+          code: 'THREADS_TARGET_ACCOUNT_NOT_FOUND',
+        });
+      }
+    } else if (platformTeamId) {
+      account = await getTeamThreadsAccountForMember(platformUserId, platformTeamId);
+    } else {
+      account = await getPersonalThreadsAccount(platformUserId);
+    }
 
     if (!account) {
       return res.status(404).json({
