@@ -57,11 +57,21 @@ const metaRuntimeState = {
 
 const allowedOrigins = [
   'https://suitegenie.in',
-  'https://social.suitegenie.in',
-  'https://apisocial.suitegenie.in',
+  'https://tweet.suitegenie.in',
+  'https://linkedin.suitegenie.in',
+  'https://linkedin.suitgenie.in',
+  'https://meta.suitegenie.in',
+  'https://api.suitegenie.in',
+  'https://tweetapi.suitegenie.in',
+  'https://apilinkedin.suitegenie.in',
+  'https://metaapi.suitegenie.in',
   'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:5175',
   'http://localhost:5176',
   'http://localhost:3000',
+  'http://localhost:3002',
+  'http://localhost:3004',
   'http://localhost:3006',
 ];
 
@@ -96,6 +106,12 @@ app.use(
         if (hostname === 'suitegenie.in' || hostname.endsWith('.suitegenie.in')) {
           return callback(null, true);
         }
+        if (hostname === 'suitgenie.in' || hostname.endsWith('.suitgenie.in')) {
+          return callback(null, true);
+        }
+        if (process.env.ALLOW_VERCEL_PREVIEWS === 'true' && hostname.endsWith('.vercel.app')) {
+          return callback(null, true);
+        }
       } catch {
         // ignore invalid origin
       }
@@ -103,7 +119,18 @@ app.use(
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Cookie', 'x-team-id'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'Cookie',
+      'X-CSRF-Token',
+      'x-csrf-token',
+      'X-Selected-Account-Id',
+      'x-selected-account-id',
+      'X-Team-Id',
+      'x-team-id',
+      'X-Requested-With',
+    ],
   })
 );
 
