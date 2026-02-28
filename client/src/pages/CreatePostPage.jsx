@@ -53,6 +53,36 @@ const CROSSPOST_REASON_LABELS = {
 const getCrossPostReasonLabel = (reason, fallback = 'Unavailable') =>
   CROSSPOST_REASON_LABELS[String(reason || '').toLowerCase()] || fallback;
 
+const normalizeCrossPostAccounts = (value) => {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((item) => {
+      const id = item?.id !== undefined && item?.id !== null ? String(item.id).trim() : '';
+      if (!id) return null;
+
+      return {
+        id,
+        username: item?.username ? String(item.username).trim() : null,
+        displayName: item?.displayName ? String(item.displayName).trim() : null,
+      };
+    })
+    .filter(Boolean);
+};
+
+const formatCrossPostAccountOption = (account) => {
+  const displayName = String(account?.displayName || '').trim();
+  const username = String(account?.username || '').trim().replace(/^@/, '');
+
+  if (displayName && username && !displayName.toLowerCase().includes(username.toLowerCase())) {
+    return `${displayName} (@${username})`;
+  }
+
+  if (displayName) return displayName;
+  if (username) return `@${username}`;
+  return 'Connected account';
+};
+
 const splitTextByLimit = (text, limit = THREADS_POST_MAX_CHARS) => {
   const normalized = String(text || '').trim();
   if (!normalized) return [];
@@ -146,9 +176,13 @@ const CreatePostPage = () => {
     loaded: false,
     teamMode: false,
     targets: {
-      x: { connected: false, reason: 'not_connected', available: false, restriction: null },
-      linkedin: { connected: false, reason: 'not_connected', available: false, restriction: null },
+      x: { connected: false, reason: 'not_connected', available: false, restriction: null, accounts: [] },
+      linkedin: { connected: false, reason: 'not_connected', available: false, restriction: null, accounts: [] },
     },
+  });
+  const [selectedCrossPostTargetIds, setSelectedCrossPostTargetIds] = useState({
+    x: '',
+    linkedin: '',
   });
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showAiAssist, setShowAiAssist] = useState(false);
@@ -191,13 +225,14 @@ const CreatePostPage = () => {
     if (!selectedPlatforms.threads) {
       setPostThreadsToX(false);
       setPostThreadsToLinkedIn(false);
+      setSelectedCrossPostTargetIds({ x: '', linkedin: '' });
       setCrossPostStatus({
         loading: false,
         loaded: false,
         teamMode: false,
         targets: {
-          x: { connected: false, reason: 'not_connected', available: false, restriction: null },
-          linkedin: { connected: false, reason: 'not_connected', available: false, restriction: null },
+          x: { connected: false, reason: 'not_connected', available: false, restriction: null, accounts: [] },
+          linkedin: { connected: false, reason: 'not_connected', available: false, restriction: null, accounts: [] },
         },
       });
     }
@@ -230,6 +265,7 @@ const CreatePostPage = () => {
               reason: targets?.x?.reason || (targets?.x?.connected === true ? null : 'not_connected'),
               available: targets?.x?.available === true,
               restriction: targets?.x?.restriction || null,
+              accounts: normalizeCrossPostAccounts(targets?.x?.accounts),
             },
             linkedin: {
               connected: targets?.linkedin?.connected === true,
@@ -238,6 +274,7 @@ const CreatePostPage = () => {
                 (targets?.linkedin?.connected === true ? null : 'not_connected'),
               available: targets?.linkedin?.available === true,
               restriction: targets?.linkedin?.restriction || null,
+              accounts: normalizeCrossPostAccounts(targets?.linkedin?.accounts),
             },
           },
         });
@@ -248,12 +285,19 @@ const CreatePostPage = () => {
           loaded: true,
           teamMode: Boolean(permissions?.teamId),
           targets: {
-            x: { connected: false, reason: 'service_unreachable', available: false, restriction: null },
+            x: {
+              connected: false,
+              reason: 'service_unreachable',
+              available: false,
+              restriction: null,
+              accounts: [],
+            },
             linkedin: {
               connected: false,
               reason: 'service_unreachable',
               available: false,
               restriction: null,
+              accounts: [],
             },
           },
         });
@@ -312,16 +356,15 @@ const CreatePostPage = () => {
   const willAutoSplitThreadsChain =
     threadsTextAutoSplitEnabled && caption.trim().length > THREADS_POST_MAX_CHARS;
   const threadsCrossPostBlockedByMode = isThreadsThread || willAutoSplitThreadsChain;
-  const threadsCrossPostTeamBlocked = crossPostStatus.teamMode === true;
+  const xTargetAccounts = crossPostStatus.targets.x.accounts || [];
+  const linkedinTargetAccounts = crossPostStatus.targets.linkedin.accounts || [];
   const xCrossPostAvailable =
     selectedPlatforms.threads &&
     !threadsCrossPostBlockedByMode &&
-    !threadsCrossPostTeamBlocked &&
     crossPostStatus.targets.x.available === true;
   const linkedinCrossPostAvailable =
     selectedPlatforms.threads &&
     !threadsCrossPostBlockedByMode &&
-    !threadsCrossPostTeamBlocked &&
     crossPostStatus.targets.linkedin.available === true;
   const hasThreadsCrossPostTargetsSelected = Boolean(
     selectedPlatforms.threads && (postThreadsToX || postThreadsToLinkedIn)
@@ -330,22 +373,53 @@ const CreatePostPage = () => {
   const linkedinToggleDisabled = crossPostStatus.loading || !linkedinCrossPostAvailable;
   const xCrossPostStatusText = crossPostStatus.loading
     ? 'Checking...'
-    : threadsCrossPostTeamBlocked
-      ? 'Unavailable in team mode'
-      : threadsCrossPostBlockedByMode
+    : threadsCrossPostBlockedByMode
         ? 'Single Threads post only'
         : xCrossPostAvailable
           ? 'Connected'
           : getCrossPostReasonLabel(crossPostStatus.targets.x.reason);
   const linkedinCrossPostStatusText = crossPostStatus.loading
     ? 'Checking...'
-    : threadsCrossPostTeamBlocked
-      ? 'Unavailable in team mode'
-      : threadsCrossPostBlockedByMode
+    : threadsCrossPostBlockedByMode
         ? 'Single Threads post only'
         : linkedinCrossPostAvailable
           ? 'Connected'
           : getCrossPostReasonLabel(crossPostStatus.targets.linkedin.reason);
+
+  useEffect(() => {
+    setSelectedCrossPostTargetIds((previous) => {
+      const next = { ...previous };
+
+      const resolveSelectedId = (currentId, enabled, accounts) => {
+        if (!enabled) return '';
+        if (!Array.isArray(accounts) || accounts.length === 0) return '';
+        const normalizedCurrent = String(currentId || '').trim();
+        const hasCurrent = accounts.some((account) => account.id === normalizedCurrent);
+        if (hasCurrent) return normalizedCurrent;
+        return String(accounts[0].id || '').trim();
+      };
+
+      next.x = resolveSelectedId(previous.x, postThreadsToX && xCrossPostAvailable, xTargetAccounts);
+      next.linkedin = resolveSelectedId(
+        previous.linkedin,
+        postThreadsToLinkedIn && linkedinCrossPostAvailable,
+        linkedinTargetAccounts
+      );
+
+      if (next.x === previous.x && next.linkedin === previous.linkedin) {
+        return previous;
+      }
+
+      return next;
+    });
+  }, [
+    postThreadsToX,
+    postThreadsToLinkedIn,
+    xCrossPostAvailable,
+    linkedinCrossPostAvailable,
+    xTargetAccounts,
+    linkedinTargetAccounts,
+  ]);
 
   useEffect(() => {
     if (postThreadsToX && !xCrossPostAvailable) {
@@ -521,6 +595,36 @@ Rules:
           x: postThreadsToX,
           linkedin: postThreadsToLinkedIn,
         },
+        crossPostTargetAccountIds: {
+          ...(postThreadsToX && selectedCrossPostTargetIds.x ? { x: selectedCrossPostTargetIds.x } : {}),
+          ...(postThreadsToLinkedIn && selectedCrossPostTargetIds.linkedin
+            ? { linkedin: selectedCrossPostTargetIds.linkedin }
+            : {}),
+        },
+        crossPostTargetAccountLabels: {
+          ...(postThreadsToX && selectedCrossPostTargetIds.x
+            ? {
+                x:
+                  xTargetAccounts.find((account) => account.id === selectedCrossPostTargetIds.x)
+                    ?.displayName ||
+                  xTargetAccounts.find((account) => account.id === selectedCrossPostTargetIds.x)
+                    ?.username ||
+                  null,
+              }
+            : {}),
+          ...(postThreadsToLinkedIn && selectedCrossPostTargetIds.linkedin
+            ? {
+                linkedin:
+                  linkedinTargetAccounts.find(
+                    (account) => account.id === selectedCrossPostTargetIds.linkedin
+                  )?.displayName ||
+                  linkedinTargetAccounts.find(
+                    (account) => account.id === selectedCrossPostTargetIds.linkedin
+                  )?.username ||
+                  null,
+              }
+            : {}),
+        },
         optimizeCrossPost,
       }),
     };
@@ -623,8 +727,16 @@ Rules:
         toast.error('X cross-post is not available for the current Threads post settings.');
         return;
       }
+      if (postThreadsToX && !String(selectedCrossPostTargetIds.x || '').trim()) {
+        toast.error('Select an X account for Threads cross-post.');
+        return;
+      }
       if (postThreadsToLinkedIn && !linkedinCrossPostAvailable) {
         toast.error('LinkedIn cross-post is not available for the current Threads post settings.');
+        return;
+      }
+      if (postThreadsToLinkedIn && !String(selectedCrossPostTargetIds.linkedin || '').trim()) {
+        toast.error('Select a LinkedIn account for Threads cross-post.');
         return;
       }
     }
@@ -649,6 +761,7 @@ Rules:
       setScheduledFor('');
       setPostThreadsToX(false);
       setPostThreadsToLinkedIn(false);
+      setSelectedCrossPostTargetIds({ x: '', linkedin: '' });
       setPreflightIssues([]);
     } catch (error) {
       const apiError = error.response?.data?.error;
@@ -1033,10 +1146,40 @@ Rules:
                 disabled={xToggleDisabled}
                 onChange={() => {
                   if (xToggleDisabled) return;
-                  setPostThreadsToX((value) => !value);
+                  setPostThreadsToX((value) => {
+                    const next = !value;
+                    if (next && !selectedCrossPostTargetIds.x && xTargetAccounts.length > 0) {
+                      setSelectedCrossPostTargetIds((previous) => ({
+                        ...previous,
+                        x: String(xTargetAccounts[0]?.id || ''),
+                      }));
+                    }
+                    return next;
+                  });
                 }}
               />
             </label>
+            {postThreadsToX && xCrossPostAvailable && xTargetAccounts.length > 0 && (
+              <label className="block text-xs text-violet-900 pl-1">
+                <span className="font-medium">Post to X account</span>
+                <select
+                  className="mt-1 w-full rounded-md border border-violet-200 bg-white px-2 py-1.5 text-xs text-gray-700"
+                  value={selectedCrossPostTargetIds.x}
+                  onChange={(event) =>
+                    setSelectedCrossPostTargetIds((previous) => ({
+                      ...previous,
+                      x: String(event.target.value || ''),
+                    }))
+                  }
+                >
+                  {xTargetAccounts.map((account) => (
+                    <option key={account.id} value={account.id}>
+                      {formatCrossPostAccountOption(account)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label className="flex items-center justify-between gap-3 text-sm text-violet-900">
               <span>Cross-post Threads post to LinkedIn ({linkedinCrossPostStatusText})</span>
               <input
@@ -1045,15 +1188,43 @@ Rules:
                 disabled={linkedinToggleDisabled}
                 onChange={() => {
                   if (linkedinToggleDisabled) return;
-                  setPostThreadsToLinkedIn((value) => !value);
+                  setPostThreadsToLinkedIn((value) => {
+                    const next = !value;
+                    if (next && !selectedCrossPostTargetIds.linkedin && linkedinTargetAccounts.length > 0) {
+                      setSelectedCrossPostTargetIds((previous) => ({
+                        ...previous,
+                        linkedin: String(linkedinTargetAccounts[0]?.id || ''),
+                      }));
+                    }
+                    return next;
+                  });
                 }}
               />
             </label>
-            {(threadsCrossPostBlockedByMode || threadsCrossPostTeamBlocked) && (
+            {postThreadsToLinkedIn && linkedinCrossPostAvailable && linkedinTargetAccounts.length > 0 && (
+              <label className="block text-xs text-violet-900 pl-1">
+                <span className="font-medium">Post to LinkedIn account</span>
+                <select
+                  className="mt-1 w-full rounded-md border border-violet-200 bg-white px-2 py-1.5 text-xs text-gray-700"
+                  value={selectedCrossPostTargetIds.linkedin}
+                  onChange={(event) =>
+                    setSelectedCrossPostTargetIds((previous) => ({
+                      ...previous,
+                      linkedin: String(event.target.value || ''),
+                    }))
+                  }
+                >
+                  {linkedinTargetAccounts.map((account) => (
+                    <option key={account.id} value={account.id}>
+                      {formatCrossPostAccountOption(account)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {threadsCrossPostBlockedByMode && (
               <p className="text-xs text-violet-800">
-                {threadsCrossPostTeamBlocked
-                  ? 'Team mode uses personal-only policy for Threads cross-post. Switch to personal mode to enable X/LinkedIn targets.'
-                  : 'Switch to single Threads post mode to enable X/LinkedIn cross-post.'}
+                Switch to single Threads post mode to enable X/LinkedIn cross-post.
               </p>
             )}
             {(postThreadsToX || postThreadsToLinkedIn) && (

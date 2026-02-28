@@ -66,23 +66,9 @@ export const resolveTeamContext = async (req) => {
   const userId = req.user?.id;
   const requestedTeamId = req.headers['x-team-id'] || req.user?.teamId || null;
 
-  const payloadMemberships = getMembershipsFromTokenPayload(req.user);
-
-  let activeMembership = null;
-
-  if (requestedTeamId) {
-    activeMembership = payloadMemberships.find(
-      (membership) => String(membership.teamId) === String(requestedTeamId) && membership.status === 'active'
-    );
-  }
-
-  if (!activeMembership) {
-    activeMembership = payloadMemberships.find((membership) => membership.status === 'active') || null;
-  }
-
-  if (!activeMembership) {
-    activeMembership = await getActiveMembershipFromDatabase(userId, requestedTeamId);
-  }
+  // DB membership is source of truth for team scope.
+  // Token payload can be stale right after leave/re-invite flows.
+  const activeMembership = await getActiveMembershipFromDatabase(userId, requestedTeamId);
 
   if (!activeMembership) {
     return {

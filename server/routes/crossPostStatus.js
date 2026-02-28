@@ -48,7 +48,7 @@ const resolveXStatus = async ({ userId, teamId }) => {
   }
 
   try {
-    const endpoint = buildInternalServiceEndpoint(tweetGenieUrl, '/api/internal/twitter/status');
+    const endpoint = buildInternalServiceEndpoint(tweetGenieUrl, '/api/internal/twitter/targets');
     const { response, body } = await fetchJson({
       endpoint,
       headers: {
@@ -64,17 +64,20 @@ const resolveXStatus = async ({ userId, teamId }) => {
         connected: false,
         reason: mapUpstreamFailureReason(response.status, body?.code),
         account: null,
+        accounts: [],
       };
     }
 
+    const accounts = Array.isArray(body?.accounts) ? body.accounts : [];
     return {
-      connected: body?.connected === true,
-      reason: body?.connected === true ? null : String(body?.reason || 'not_connected'),
-      account: body?.account || null,
+      connected: accounts.length > 0,
+      reason: accounts.length > 0 ? null : 'not_connected',
+      account: accounts[0] || null,
+      accounts,
     };
   } catch (error) {
     if (error?.name === 'AbortError') {
-      return { connected: false, reason: 'timeout', account: null };
+      return { connected: false, reason: 'timeout', account: null, accounts: [] };
     }
 
     logger.warn('[cross-post/status] Failed to fetch X status', {
@@ -82,7 +85,7 @@ const resolveXStatus = async ({ userId, teamId }) => {
       teamId: teamId || null,
       error: error?.message || String(error),
     });
-    return { connected: false, reason: 'service_unreachable', account: null };
+    return { connected: false, reason: 'service_unreachable', account: null, accounts: [] };
   }
 };
 
@@ -95,7 +98,7 @@ const resolveLinkedInStatus = async ({ userId, teamId }) => {
   }
 
   try {
-    const endpoint = buildInternalServiceEndpoint(linkedInGenieUrl, '/api/linkedin/status');
+    const endpoint = buildInternalServiceEndpoint(linkedInGenieUrl, '/api/internal/accounts/targets');
     const { response, body } = await fetchJson({
       endpoint,
       headers: {
@@ -111,6 +114,7 @@ const resolveLinkedInStatus = async ({ userId, teamId }) => {
         connected: false,
         reason: mapUpstreamFailureReason(response.status, body?.code),
         account: null,
+        accounts: [],
       };
     }
 
@@ -121,10 +125,11 @@ const resolveLinkedInStatus = async ({ userId, teamId }) => {
       connected: accounts.length > 0,
       reason: accounts.length > 0 ? null : 'not_connected',
       account: primary,
+      accounts,
     };
   } catch (error) {
     if (error?.name === 'AbortError') {
-      return { connected: false, reason: 'timeout', account: null };
+      return { connected: false, reason: 'timeout', account: null, accounts: [] };
     }
 
     logger.warn('[cross-post/status] Failed to fetch LinkedIn status', {
@@ -132,7 +137,7 @@ const resolveLinkedInStatus = async ({ userId, teamId }) => {
       teamId: teamId || null,
       error: error?.message || String(error),
     });
-    return { connected: false, reason: 'service_unreachable', account: null };
+    return { connected: false, reason: 'service_unreachable', account: null, accounts: [] };
   }
 };
 
@@ -156,8 +161,8 @@ router.get('/status', async (req, res) => {
   const teamMode = Boolean(teamId);
   const withAvailability = (status) => ({
     ...status,
-    available: !teamMode && status.connected === true,
-    restriction: teamMode ? 'team_mode_not_supported' : null,
+    available: status.connected === true,
+    restriction: null,
   });
 
   return res.json({

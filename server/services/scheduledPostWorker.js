@@ -18,6 +18,17 @@ let isRunning = false;
 let metadataColumnChecked = false;
 let metadataColumnAvailable = false;
 
+const isTransientDbError = (error) => {
+  const message = String(error?.message || '').toLowerCase();
+  const code = String(error?.code || '').toUpperCase();
+  if (message.includes('connection terminated')) return true;
+  if (message.includes('connection timeout')) return true;
+  if (message.includes('econnreset')) return true;
+  if (message.includes('terminating connection due to administrator command')) return true;
+  if (code.startsWith('08')) return true;
+  return false;
+};
+
 const parseJsonArray = (value) => {
   if (Array.isArray(value)) return value;
   if (typeof value === 'string') {
@@ -595,7 +606,12 @@ const tick = async () => {
       }
     }
   } catch (error) {
-    logger.error('Scheduled worker tick failed', { message: error?.message || String(error) });
+    const message = error?.message || String(error);
+    if (isTransientDbError(error)) {
+      logger.warn('Scheduled worker tick skipped due to transient DB connectivity issue', { message });
+    } else {
+      logger.error('Scheduled worker tick failed', { message });
+    }
   } finally {
     isRunning = false;
   }

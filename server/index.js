@@ -30,6 +30,7 @@ import aiRoutes from './routes/ai.js';
 import mediaRoutes from './routes/media.js';
 import creditsRoutes from './routes/credits.js';
 import crossPostStatusRoutes from './routes/crossPostStatus.js';
+import cleanupRoutes from './routes/cleanup.js';
 
 import { requirePlatformLogin } from './middleware/requirePlatformLogin.js';
 import { resolveTeamContextMiddleware } from './middleware/resolveTeamContext.js';
@@ -42,6 +43,17 @@ dotenv.config({ path: path.resolve(__dirname, '.env') });
 
 const app = express();
 const PORT = Number.parseInt(process.env.PORT || '3006', 10);
+const READINESS_CHECK_INTERVAL_MS = Number.parseInt(process.env.READINESS_CHECK_INTERVAL_MS || '30000', 10);
+const metaRuntimeState = {
+  database: {
+    ok: false,
+    lastCheckedAt: null,
+    error: 'Database readiness not checked yet',
+  },
+  schemaReady: false,
+  schemaError: 'Schema readiness not checked yet',
+  scheduledWorkerStarted: false,
+};
 
 const allowedOrigins = [
   'https://suitegenie.in',
@@ -100,8 +112,109 @@ app.use(cookieParser());
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
+const setMetaDatabaseReady = () => {
+  metaRuntimeState.database.ok = true;
+  metaRuntimeState.database.lastCheckedAt = new Date().toISOString();
+  metaRuntimeState.database.error = null;
+};
+
+const setMetaDatabaseNotReady = (error) => {
+  metaRuntimeState.database.ok = false;
+  metaRuntimeState.database.lastCheckedAt = new Date().toISOString();
+  metaRuntimeState.database.error = error?.message || String(error || 'Unknown database error');
+};
+
+const refreshMetaDatabaseReadiness = async () => {
+  try {
+    await query('SELECT 1');
+    setMetaDatabaseReady();
+    return true;
+  } catch (error) {
+    setMetaDatabaseNotReady(error);
+    return false;
+  }
+};
+
+const markMetaSchemaReady = () => {
+  metaRuntimeState.schemaReady = true;
+  metaRuntimeState.schemaError = null;
+};
+
+const markMetaSchemaNotReady = (error) => {
+  metaRuntimeState.schemaReady = false;
+  metaRuntimeState.schemaError = error?.message || String(error || 'Unknown schema error');
+};
+
+const maybeEnsureMetaSchemaAndWorker = async () => {
+  if (!metaRuntimeState.database.ok) {
+    logger.warn('Meta Genie schema/worker startup skipped because database is not ready', {
+      database: metaRuntimeState.database,
+    });
+    return;
+  }
+
+  if (!metaRuntimeState.schemaReady) {
+    await ensureSchema();
+    markMetaSchemaReady();
+    logger.info('Meta Genie schema ready');
+  }
+
+  if (!metaRuntimeState.scheduledWorkerStarted) {
+    startScheduledPostWorker();
+    metaRuntimeState.scheduledWorkerStarted = true;
+  }
+};
+
+const getMetaHealthPayload = () => {
+  const ready = metaRuntimeState.database.ok && metaRuntimeState.schemaReady;
+  return {
+    status: ready ? 'OK' : 'DEGRADED',
+    live: true,
+    ready,
+    service: 'Meta Genie',
+    timestamp: new Date().toISOString(),
+    checks: {
+      database: { ...metaRuntimeState.database },
+      schema: {
+        ready: metaRuntimeState.schemaReady,
+        error: metaRuntimeState.schemaError,
+      },
+      scheduledWorker: {
+        started: metaRuntimeState.scheduledWorkerStarted,
+      },
+    },
+  };
+};
+
+const startMetaReadinessLoop = () => {
+  const intervalMs =
+    Number.isFinite(READINESS_CHECK_INTERVAL_MS) && READINESS_CHECK_INTERVAL_MS > 0
+      ? READINESS_CHECK_INTERVAL_MS
+      : 30000;
+
+  const timer = setInterval(async () => {
+    await refreshMetaDatabaseReadiness();
+    try {
+      await maybeEnsureMetaSchemaAndWorker();
+    } catch (error) {
+      markMetaSchemaNotReady(error);
+      logger.error('Meta Genie schema migration failed — server is running but scheduled posts may not work', {
+        message: error.message,
+      });
+    }
+  }, intervalMs);
+
+  timer.unref?.();
+};
+
 app.get('/health', (_req, res) => {
-  res.status(200).json({ status: 'OK', service: 'Meta Genie' });
+  const payload = getMetaHealthPayload();
+  res.status(200).json(payload);
+});
+
+app.get('/ready', (_req, res) => {
+  const payload = getMetaHealthPayload();
+  res.status(payload.ready ? 200 : 503).json(payload);
 });
 
 app.get('/api/csrf-token', (_req, res) => {
@@ -112,6 +225,7 @@ app.use('/auth', authRoutes);
 app.use('/api/oauth', oauthRoutes);
 app.use('/api/threads', threadsRoutes);
 app.use('/api/internal/threads', internalThreadsRoutes);
+app.use('/api/cleanup', cleanupRoutes);
 
 app.use('/api', requirePlatformLogin, resolveTeamContextMiddleware);
 app.use('/api/accounts', accountsRoutes);
@@ -157,20 +271,17 @@ const start = async () => {
     logger.info(`Meta Genie server running on port ${PORT}`);
   });
 
-  // Run schema migrations and start worker in the background AFTER the
-  // server is already accepting requests.
+  await refreshMetaDatabaseReadiness();
   try {
-    await ensureSchema();
-    logger.info('Meta Genie schema ready');
-    startScheduledPostWorker();
+    await maybeEnsureMetaSchemaAndWorker();
   } catch (error) {
+    markMetaSchemaNotReady(error);
     logger.error('Meta Genie schema migration failed — server is running but scheduled posts may not work', {
       message: error.message,
     });
-    // Do NOT exit — the server is already live and handling requests.
-    // Schema failures are usually transient (DB not ready yet).
-    // The worker can be started manually or on next deploy.
   }
+
+  startMetaReadinessLoop();
 };
 
 start().catch((error) => {
