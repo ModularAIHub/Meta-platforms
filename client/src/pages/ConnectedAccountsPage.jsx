@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Instagram, Youtube, AtSign, Link2, Unlink, ShieldAlert } from 'lucide-react';
+import { Instagram, Youtube, AtSign, Link2, Unlink, ShieldAlert, Twitter, Linkedin } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { accountsApi, oauthApi } from '../utils/api';
 import { useAccounts } from '../contexts/AccountContext';
@@ -10,16 +10,15 @@ import {
 } from '../config/platformAvailability';
 
 const PlatformIcon = ({ platform }) => {
-  if (platform === 'instagram') {
-    return <Instagram className="h-5 w-5 text-pink-600" />;
-  }
-
-  if (platform === 'threads') {
-    return <AtSign className="h-5 w-5 text-slate-700" />;
-  }
-
+  if (platform === 'instagram') return <Instagram className="h-5 w-5 text-pink-600" />;
+  if (platform === 'threads') return <AtSign className="h-5 w-5 text-slate-700" />;
+  if (platform === 'twitter') return <Twitter className="h-5 w-5 text-sky-500" />;
+  if (platform === 'linkedin') return <Linkedin className="h-5 w-5 text-blue-700" />;
   return <Youtube className="h-5 w-5 text-red-600" />;
 };
+
+// Platforms whose OAuth2 tokens are auto-refreshed server-side — never show scary expiry UI.
+const AUTOREFRESH_PLATFORMS = new Set(['twitter', 'linkedin']);
 
 const ConnectedAccountsPage = () => {
   const { accounts, permissions, loading, refreshAccounts } = useAccounts();
@@ -321,6 +320,7 @@ const ConnectedAccountsPage = () => {
           <div className="space-y-3">
             {visibleAccounts.map((account) => {
               const expiry = getExpiryMeta(account.token_expires_at);
+              const autoRefreshes = AUTOREFRESH_PLATFORMS.has(account.platform);
 
               return (
                 <div key={account.id} className="rounded-lg border border-gray-200 p-4 flex items-center justify-between">
@@ -330,18 +330,21 @@ const ConnectedAccountsPage = () => {
                       {account.account_display_name || account.account_username || account.account_id}
                     </div>
                     <p className="text-sm text-gray-500 mt-1">{account.platform} {account.account_username ? `@${account.account_username}` : ''}</p>
-                    {expiry?.expired && (
-                      <p className="text-xs mt-1 text-red-600">Token expired. Reconnect account.</p>
-                    )}
-                    {!expiry?.expired && expiry?.expiringSoon && (
-                      <p className="text-xs mt-1 text-amber-600">
-                        Token expires in {expiry.daysRemaining} day(s) ({expiry.label})
-                      </p>
-                    )}
-                    {!expiry?.expired && !expiry?.expiringSoon && expiry && (
-                      <p className="text-xs mt-1 text-gray-500">
-                        Token expires in {expiry.daysRemaining} day(s) ({expiry.label})
-                      </p>
+                    {autoRefreshes ? (
+                      // OAuth2 tokens for these platforms are refreshed silently on every use.
+                      // Never show an alarming expiry warning — it will just confuse users.
+                      null
+                    ) : (
+                      <>
+                        {expiry?.expired && (
+                          <p className="text-xs mt-1 text-red-600">Token expired. Reconnect account.</p>
+                        )}
+                        {!expiry?.expired && expiry?.expiringSoon && (
+                          <p className="text-xs mt-1 text-amber-600">
+                            Token expires in {expiry.daysRemaining} day(s) ({expiry.label})
+                          </p>
+                        )}
+                      </>
                     )}
                   </div>
 
