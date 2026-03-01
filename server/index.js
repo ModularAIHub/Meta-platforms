@@ -259,7 +259,7 @@ app.use('/api/cleanup', cleanupRoutes);
 app.post('/api/cron/scheduler', async (req, res) => {
   const cronSecret = (process.env.CRON_SECRET || '').trim();
   const authHeader = req.headers['authorization'] || '';
-  const providedToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
+  const providedToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : (authHeader || req.query.secret || '');
   if (!cronSecret || providedToken !== cronSecret) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
