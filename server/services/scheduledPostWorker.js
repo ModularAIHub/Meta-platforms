@@ -617,6 +617,10 @@ const tick = async () => {
   }
 };
 
+export const runSchedulerTick = async () => {
+  return tick();
+};
+
 export const startScheduledPostWorker = () => {
   if (!WORKER_ENABLED) {
     logger.info('Scheduled post worker disabled via SOCIAL_SCHEDULE_WORKER_ENABLED');

@@ -36,7 +36,7 @@ import { requirePlatformLogin } from './middleware/requirePlatformLogin.js';
 import { resolveTeamContextMiddleware } from './middleware/resolveTeamContext.js';
 import { ensureSchema } from './config/schema.js';
 import { logger } from './utils/logger.js';
-import { startScheduledPostWorker, stopScheduledPostWorker } from './services/scheduledPostWorker.js';
+import { startScheduledPostWorker, stopScheduledPostWorker, runSchedulerTick } from './services/scheduledPostWorker.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, '.env') });
@@ -253,6 +253,24 @@ app.use('/api/oauth', oauthRoutes);
 app.use('/api/threads', threadsRoutes);
 app.use('/api/internal/threads', internalThreadsRoutes);
 app.use('/api/cleanup', cleanupRoutes);
+
+// Vercel Cron trigger for the Meta Genie post scheduler.
+// Called every minute by Vercel (see server/vercel.json). Auth via CRON_SECRET.
+app.post('/api/cron/scheduler', async (req, res) => {
+  const cronSecret = (process.env.CRON_SECRET || '').trim();
+  const authHeader = req.headers['authorization'] || '';
+  const providedToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
+  if (!cronSecret || providedToken !== cronSecret) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  try {
+    await runSchedulerTick();
+    return res.json({ ok: true });
+  } catch (error) {
+    logger.error('[MetaSchedulerCron] Tick failed', { message: error?.message });
+    return res.status(500).json({ ok: false, error: error?.message || 'unknown_error' });
+  }
+});
 
 app.use('/api', requirePlatformLogin, resolveTeamContextMiddleware);
 app.use('/api/accounts', accountsRoutes);
