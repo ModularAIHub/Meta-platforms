@@ -66,7 +66,9 @@ const DashboardPage = () => {
     }
 
     const returnUrl = `${window.location.origin}/dashboard`;
-    const connectUrl = oauthApi.connectUrl(platform, returnUrl);
+    // Pass teamId as query param — browser navigations don't carry axios headers.
+    const teamId = permissions?.teamId || null;
+    const connectUrl = oauthApi.connectUrl(platform, returnUrl, teamId);
     window.location.href = connectUrl;
   };
 

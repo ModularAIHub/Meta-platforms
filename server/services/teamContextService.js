@@ -64,7 +64,9 @@ export const getActiveMembershipFromDatabase = async (userId, preferredTeamId = 
 
 export const resolveTeamContext = async (req) => {
   const userId = req.user?.id;
-  const requestedTeamId = req.headers['x-team-id'] || req.user?.teamId || null;
+  // Also read from query param — browser OAuth redirects can't carry custom headers.
+  const requestedTeamId =
+    req.headers['x-team-id'] || req.query?.teamId || req.user?.teamId || null;
 
   // DB membership is source of truth for team scope.
   // Token payload can be stale right after leave/re-invite flows.

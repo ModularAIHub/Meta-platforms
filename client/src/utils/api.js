@@ -195,8 +195,10 @@ export const mediaApi = {
 };
 
 export const oauthApi = {
-  connectUrl: (platform, returnUrl) =>
-    `${API_BASE_URL}/api/oauth/${platform}/connect?returnUrl=${encodeURIComponent(returnUrl)}`,
+  connectUrl: (platform, returnUrl, teamId = null) => {
+    const base = `${API_BASE_URL}/api/oauth/${platform}/connect?returnUrl=${encodeURIComponent(returnUrl)}`;
+    return teamId ? `${base}&teamId=${encodeURIComponent(teamId)}` : base;
+  },
 };
 
 export default api;

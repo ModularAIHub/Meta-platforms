@@ -67,7 +67,10 @@ const ConnectedAccountsPage = () => {
     }
 
     const returnUrl = `${window.location.origin}/accounts`;
-    const connectUrl = oauthApi.connectUrl(platform, returnUrl);
+    // Pass teamId as query param so the server gets it even without x-team-id header
+    // (browser navigations don't send custom headers via axios interceptors).
+    const teamId = permissions?.teamId || null;
+    const connectUrl = oauthApi.connectUrl(platform, returnUrl, teamId);
     window.location.href = connectUrl;
   };
 

@@ -29,7 +29,10 @@ const isThreadsTesterPermissionError = (error) => {
 
 const ensureReturnUrl = (value) => {
   if (!value) {
-    return `${process.env.CLIENT_URL || 'http://localhost:5176'}/accounts`;
+    // CLIENT_URL must be set to the frontend origin in production (e.g. https://meta.suitegenie.in).
+    // VERCEL_URL is the server's own hostname — not the client — so it's not used here.
+    const clientBase = (process.env.CLIENT_URL || '').trim();
+    return `${clientBase || 'http://localhost:5176'}/accounts`;
   }
   return value;
 };
@@ -181,7 +184,7 @@ export const instagramCallback = async (req, res) => {
 
   const statePayload = state ? await consumeOAuthState(state) : null;
   if (!statePayload) {
-    return redirectWithError(res, `${process.env.CLIENT_URL || 'http://localhost:5176'}/accounts`, 'invalid_state');
+    return redirectWithError(res, ensureReturnUrl(null), 'invalid_state');
   }
 
   const { userId, teamId, returnUrl } = statePayload;
@@ -360,8 +363,7 @@ export const threadsCallback = async (req, res) => {
 
   const statePayload = state ? await consumeOAuthState(state) : null;
   if (!statePayload) {
-    console.error('[THREADS CALLBACK] Invalid or expired state');
-    return redirectWithError(res, `${process.env.CLIENT_URL || 'http://localhost:5176'}/accounts`, 'invalid_state');
+    return redirectWithError(res, ensureReturnUrl(null), 'invalid_state');
   }
 
   const { userId, teamId, returnUrl } = statePayload;
@@ -578,7 +580,7 @@ export const youtubeCallback = async (req, res) => {
 
   const statePayload = state ? await consumeOAuthState(state) : null;
   if (!statePayload) {
-    return redirectWithError(res, `${process.env.CLIENT_URL || 'http://localhost:5176'}/accounts`, 'invalid_state');
+    return redirectWithError(res, ensureReturnUrl(null), 'invalid_state');
   }
 
   const { userId, teamId, returnUrl } = statePayload;
