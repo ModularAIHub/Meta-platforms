@@ -62,24 +62,25 @@ const parseJsonObject = (value, fallback = {}) => {
 const detectMedia = (mediaUrls) =>
   Array.isArray(mediaUrls) && mediaUrls.some((url) => String(url || '').trim().length > 0);
 
-const buildInternalServiceHeaders = ({ userId, internalApiKey }) => ({
+const buildInternalServiceHeaders = ({ userId, internalApiKey, teamId = null }) => ({
   'Content-Type': 'application/json',
   'x-internal-api-key': internalApiKey,
   'x-internal-caller': INTERNAL_CALLER,
   'x-platform-user-id': String(userId),
+  ...(teamId ? { 'x-platform-team-id': String(teamId) } : {}),
 });
 
 const buildInternalServiceEndpoint = (baseUrl, path) =>
   `${String(baseUrl || '').trim().replace(/\/$/, '')}${path}`;
 
-const postInternalJson = async ({ endpoint, userId, internalApiKey, payload, timeoutMs = 0 }) => {
+const postInternalJson = async ({ endpoint, userId, teamId = null, internalApiKey, payload, timeoutMs = 0 }) => {
   const controller = Number.isFinite(timeoutMs) && timeoutMs > 0 ? new AbortController() : null;
   let timeoutId = null;
   try {
     if (controller) timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     const response = await fetch(endpoint, {
       method: 'POST',
-      headers: buildInternalServiceHeaders({ userId, internalApiKey }),
+      headers: buildInternalServiceHeaders({ userId, internalApiKey, teamId }),
       body: JSON.stringify(payload),
       signal: controller?.signal,
     });
@@ -154,7 +155,7 @@ const ensureMetadataColumnSupport = async () => {
   return metadataColumnAvailable;
 };
 
-const crossPostToX = async ({ userId, content, mediaDetected = false, mediaUrls = [] }) => {
+const crossPostToX = async ({ userId, teamId = null, content, mediaDetected = false, mediaUrls = [], targetAccountId = null }) => {
   const tweetGenieUrl = String(process.env.TWEET_GENIE_URL || '').trim();
   const internalApiKey = String(process.env.INTERNAL_API_KEY || '').trim();
   if (!tweetGenieUrl || !internalApiKey) return { status: 'skipped_not_configured' };
@@ -163,6 +164,7 @@ const crossPostToX = async ({ userId, content, mediaDetected = false, mediaUrls 
     const { response, body } = await postInternalJson({
       endpoint: buildInternalServiceEndpoint(tweetGenieUrl, '/api/internal/twitter/cross-post'),
       userId,
+      teamId,
       internalApiKey,
       timeoutMs: X_CROSSPOST_TIMEOUT_MS,
       payload: {
@@ -171,6 +173,7 @@ const crossPostToX = async ({ userId, content, mediaDetected = false, mediaUrls 
         mediaDetected: Boolean(mediaDetected),
         sourcePlatform: 'threads_schedule',
         media: absolutizeSocialMediaUrlsForCrossPost(mediaUrls),
+        ...(targetAccountId ? { targetAccountId: String(targetAccountId) } : {}),
       },
     });
 
@@ -200,7 +203,7 @@ const crossPostToX = async ({ userId, content, mediaDetected = false, mediaUrls 
   }
 };
 
-const saveToTweetHistory = async ({ userId, content, tweetId = null, mediaDetected = false }) => {
+const saveToTweetHistory = async ({ userId, teamId = null, content, tweetId = null, mediaDetected = false }) => {
   const tweetGenieUrl = String(process.env.TWEET_GENIE_URL || '').trim();
   const internalApiKey = String(process.env.INTERNAL_API_KEY || '').trim();
   if (!tweetGenieUrl || !internalApiKey) return;
@@ -209,6 +212,7 @@ const saveToTweetHistory = async ({ userId, content, tweetId = null, mediaDetect
     await postInternalJson({
       endpoint: buildInternalServiceEndpoint(tweetGenieUrl, '/api/internal/twitter/save-to-history'),
       userId,
+      teamId,
       internalApiKey,
       payload: {
         content,
@@ -222,7 +226,7 @@ const saveToTweetHistory = async ({ userId, content, tweetId = null, mediaDetect
   }
 };
 
-const crossPostToLinkedIn = async ({ userId, content, mediaUrls = [] }) => {
+const crossPostToLinkedIn = async ({ userId, teamId = null, content, mediaUrls = [], targetAccountId = null }) => {
   const linkedInGenieUrl = String(process.env.LINKEDIN_GENIE_URL || '').trim();
   const internalApiKey = String(process.env.INTERNAL_API_KEY || '').trim();
   if (!linkedInGenieUrl || !internalApiKey) return { status: 'skipped_not_configured' };
@@ -231,12 +235,14 @@ const crossPostToLinkedIn = async ({ userId, content, mediaUrls = [] }) => {
     const { response, body } = await postInternalJson({
       endpoint: buildInternalServiceEndpoint(linkedInGenieUrl, '/api/internal/cross-post'),
       userId,
+      teamId,
       internalApiKey,
       timeoutMs: LINKEDIN_CROSSPOST_TIMEOUT_MS,
       payload: {
         content,
         media: absolutizeSocialMediaUrlsForCrossPost(mediaUrls),
         sourcePlatform: 'threads_schedule',
+        ...(teamId && targetAccountId ? { targetLinkedinTeamAccountId: String(targetAccountId) } : {}),
       },
     });
 
@@ -520,46 +526,50 @@ const publishScheduledPost = async (post) => {
     };
 
     if (xEnabled || linkedinEnabled) {
-      if (post.team_id) {
-        if (xEnabled) crossPostResult.x.status = 'skipped_individual_only';
-        if (linkedinEnabled) crossPostResult.linkedin.status = 'skipped_individual_only';
-      } else {
-        const sourceContent = caption || threadsSequence[0] || '';
+      const sourceContent = caption || threadsSequence[0] || '';
+      const routing =
+        crossPostMeta.routing && typeof crossPostMeta.routing === 'object'
+          ? crossPostMeta.routing
+          : {};
 
-        if (xEnabled) {
-          const xResult = await crossPostToX({
+      if (xEnabled) {
+        const xResult = await crossPostToX({
+          userId: post.user_id,
+          teamId: post.team_id || null,
+          content: sourceContent,
+          mediaDetected,
+          mediaUrls,
+          targetAccountId: routing.x?.targetAccountId || null,
+        });
+        crossPostResult.x = {
+          ...crossPostResult.x,
+          ...xResult,
+          status: xResult?.status || 'failed',
+        };
+        if (crossPostResult.x.status === 'posted') {
+          await saveToTweetHistory({
             userId: post.user_id,
+            teamId: post.team_id || null,
             content: sourceContent,
+            tweetId: crossPostResult.x.tweetId || null,
             mediaDetected,
-            mediaUrls,
           });
-          crossPostResult.x = {
-            ...crossPostResult.x,
-            ...xResult,
-            status: xResult?.status || 'failed',
-          };
-          if (crossPostResult.x.status === 'posted') {
-            await saveToTweetHistory({
-              userId: post.user_id,
-              content: sourceContent,
-              tweetId: crossPostResult.x.tweetId || null,
-              mediaDetected,
-            });
-          }
         }
+      }
 
-        if (linkedinEnabled) {
-          const linkedInResult = await crossPostToLinkedIn({
-            userId: post.user_id,
-            content: sourceContent,
-            mediaUrls,
-          });
-          crossPostResult.linkedin = {
-            ...crossPostResult.linkedin,
-            ...linkedInResult,
-            status: linkedInResult?.status || 'failed',
-          };
-        }
+      if (linkedinEnabled) {
+        const linkedInResult = await crossPostToLinkedIn({
+          userId: post.user_id,
+          teamId: post.team_id || null,
+          content: sourceContent,
+          mediaUrls,
+          targetAccountId: routing.linkedin?.targetAccountId || null,
+        });
+        crossPostResult.linkedin = {
+          ...crossPostResult.linkedin,
+          ...linkedInResult,
+          status: linkedInResult?.status || 'failed',
+        };
       }
     }
 

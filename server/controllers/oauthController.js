@@ -27,6 +27,13 @@ const isThreadsTesterPermissionError = (error) => {
   return payload.error_subcode === 10 || message.includes('threads_basic permission');
 };
 
+const isInstagramTesterPermissionError = (error) => {
+  const payload = error?.response?.data?.error || {};
+  const message = String(payload.message || '').toLowerCase();
+  // Matches Instagram's "Application does not have permission for this action" or subcode 10 errors
+  return payload.error_subcode === 10 || message.includes('permission for this action') || message.includes('instagram_business_basic permission');
+};
+
 const ensureReturnUrl = (value) => {
   if (!value) {
     // CLIENT_URL must be set to the frontend origin in production (e.g. https://meta.suitegenie.in).
@@ -69,19 +76,19 @@ const upsertConnectedAccount = async ({
 }) => {
   const lookup = teamId
     ? await query(
-        `SELECT id
+      `SELECT id
          FROM social_connected_accounts
          WHERE team_id = $1 AND platform = $2 AND account_id = $3
          LIMIT 1`,
-        [teamId, platform, accountId]
-      )
+      [teamId, platform, accountId]
+    )
     : await query(
-        `SELECT id
+      `SELECT id
          FROM social_connected_accounts
          WHERE user_id = $1 AND team_id IS NULL AND platform = $2 AND account_id = $3
          LIMIT 1`,
-        [userId, platform, accountId]
-      );
+      [userId, platform, accountId]
+    );
 
   if (lookup.rows[0]) {
     const id = lookup.rows[0].id;
@@ -305,7 +312,10 @@ export const instagramCallback = async (req, res) => {
     });
 
     return redirectWithSuccess(res, returnUrl, 'instagram');
-  } catch {
+  } catch (error) {
+    if (isInstagramTesterPermissionError(error)) {
+      return redirectWithError(res, returnUrl, 'instagram_tester_or_app_review_required');
+    }
     return redirectWithError(res, returnUrl, 'instagram_connection_failed');
   }
 };
@@ -429,9 +439,9 @@ export const threadsCallback = async (req, res) => {
       }
     );
 
-    console.log('[THREADS CALLBACK] Token response received:', { 
+    console.log('[THREADS CALLBACK] Token response received:', {
       hasToken: !!tokenResponse.data?.access_token,
-      userId: tokenResponse.data?.user_id 
+      userId: tokenResponse.data?.user_id
     });
 
     const shortLivedToken = tokenResponse.data?.access_token;

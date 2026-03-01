@@ -21,6 +21,7 @@ import authRoutes from './routes/auth.js';
 import oauthRoutes from './routes/oauth.js';
 import threadsRoutes from './routes/threads.js';
 import internalThreadsRoutes from './routes/internalThreads.js';
+import internalInstagramRoutes from './routes/internalInstagram.js';
 import accountsRoutes from './routes/accounts.js';
 import postsRoutes from './routes/posts.js';
 import dashboardRoutes from './routes/dashboard.js';
@@ -252,6 +253,7 @@ app.use('/auth', authRoutes);
 app.use('/api/oauth', oauthRoutes);
 app.use('/api/threads', threadsRoutes);
 app.use('/api/internal/threads', internalThreadsRoutes);
+app.use('/api/internal/instagram', internalInstagramRoutes);
 app.use('/api/cleanup', cleanupRoutes);
 
 // Vercel Cron trigger for the Meta Genie post scheduler.
