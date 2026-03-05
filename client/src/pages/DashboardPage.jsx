@@ -44,6 +44,50 @@ const AccountPill = ({ platform }) => {
   );
 };
 
+const parseJsonObject = (value, fallback = {}) => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return { ...fallback, ...value };
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return { ...fallback, ...parsed };
+      }
+    } catch {
+      return { ...fallback };
+    }
+  }
+  return { ...fallback };
+};
+
+const getCrossPostTargetsForPost = (post) => {
+  const metadata = parseJsonObject(post?.metadata, {});
+  const crossPostMeta =
+    metadata?.cross_post && typeof metadata.cross_post === 'object' ? metadata.cross_post : null;
+  if (!crossPostMeta) return [];
+
+  const targets = crossPostMeta.targets && typeof crossPostMeta.targets === 'object' ? crossPostMeta.targets : {};
+  const lastResult = crossPostMeta.last_result && typeof crossPostMeta.last_result === 'object'
+    ? crossPostMeta.last_result
+    : {};
+
+  const buildTarget = ({ key, alias = null, label }) => {
+    const enabled = Boolean(targets?.[key] || (alias ? targets?.[alias] : false));
+    if (!enabled) return null;
+    const result =
+      (lastResult?.[key] && typeof lastResult[key] === 'object' ? lastResult[key] : null) ||
+      (alias && lastResult?.[alias] && typeof lastResult[alias] === 'object' ? lastResult[alias] : null);
+    const status = String(result?.status || 'pending').toLowerCase().replace(/_/g, ' ');
+    return `${label}: ${status}`;
+  };
+
+  return [
+    buildTarget({ key: 'x', alias: 'twitter', label: 'X' }),
+    buildTarget({ key: 'linkedin', alias: 'linkedIn', label: 'LinkedIn' }),
+  ].filter(Boolean);
+};
+
 const DashboardPage = () => {
   const {
     accounts,
@@ -252,7 +296,7 @@ const DashboardPage = () => {
 
               {IS_THREADS_ONLY_MODE && (
                 <p className="text-xs text-gray-500">
-                  Instagram and YouTube are visible here but locked in production while review is pending.
+                  Instagram and YouTube are visible here but locked in production for now.
                 </p>
               )}
 
@@ -297,6 +341,11 @@ const DashboardPage = () => {
                     </span>
                   </div>
                   <p className="text-sm text-gray-800 whitespace-pre-wrap">{post.caption || 'No caption'}</p>
+                  {getCrossPostTargetsForPost(post).length > 0 && (
+                    <p className="text-xs text-gray-600 mt-2">
+                      Cross-post: {getCrossPostTargetsForPost(post).join(' · ')}
+                    </p>
+                  )}
                   <p className="text-xs text-gray-500 mt-2">
                     {post.status === 'scheduled' ? 'Scheduled' : 'Updated'}: {formatDateTime(post.scheduled_for || post.updated_at)}
                   </p>

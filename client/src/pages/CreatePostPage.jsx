@@ -157,8 +157,6 @@ const CreatePostPage = () => {
   const [uploading, setUploading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [checkingPreflight, setCheckingPreflight] = useState(false);
-  const [preflightIssues, setPreflightIssues] = useState([]);
 
   const [selectedPlatforms, setSelectedPlatforms] = useState(DEFAULT_PLATFORM_SELECTION);
 
@@ -355,16 +353,13 @@ const CreatePostPage = () => {
 
   const willAutoSplitThreadsChain =
     threadsTextAutoSplitEnabled && caption.trim().length > THREADS_POST_MAX_CHARS;
-  const threadsCrossPostBlockedByMode = isThreadsThread || willAutoSplitThreadsChain;
   const xTargetAccounts = crossPostStatus.targets.x.accounts || [];
   const linkedinTargetAccounts = crossPostStatus.targets.linkedin.accounts || [];
   const xCrossPostAvailable =
     selectedPlatforms.threads &&
-    !threadsCrossPostBlockedByMode &&
     crossPostStatus.targets.x.available === true;
   const linkedinCrossPostAvailable =
     selectedPlatforms.threads &&
-    !threadsCrossPostBlockedByMode &&
     crossPostStatus.targets.linkedin.available === true;
   const hasThreadsCrossPostTargetsSelected = Boolean(
     selectedPlatforms.threads && (postThreadsToX || postThreadsToLinkedIn)
@@ -373,18 +368,14 @@ const CreatePostPage = () => {
   const linkedinToggleDisabled = crossPostStatus.loading || !linkedinCrossPostAvailable;
   const xCrossPostStatusText = crossPostStatus.loading
     ? 'Checking...'
-    : threadsCrossPostBlockedByMode
-        ? 'Single Threads post only'
-        : xCrossPostAvailable
-          ? 'Connected'
-          : getCrossPostReasonLabel(crossPostStatus.targets.x.reason);
+    : xCrossPostAvailable
+      ? 'Connected'
+      : getCrossPostReasonLabel(crossPostStatus.targets.x.reason);
   const linkedinCrossPostStatusText = crossPostStatus.loading
     ? 'Checking...'
-    : threadsCrossPostBlockedByMode
-        ? 'Single Threads post only'
-        : linkedinCrossPostAvailable
-          ? 'Connected'
-          : getCrossPostReasonLabel(crossPostStatus.targets.linkedin.reason);
+    : linkedinCrossPostAvailable
+      ? 'Connected'
+      : getCrossPostReasonLabel(crossPostStatus.targets.linkedin.reason);
 
   useEffect(() => {
     setSelectedCrossPostTargetIds((previous) => {
@@ -443,21 +434,7 @@ const CreatePostPage = () => {
     [mediaUrls]
   );
 
-  useEffect(() => {
-    setPreflightIssues([]);
-  }, [
-    caption,
-    mediaUrls,
-    selectedPlatforms.instagram,
-    selectedPlatforms.threads,
-    selectedPlatforms.youtube,
-    instagramType,
-    youtubeType,
-    threadsType,
-    threadsPosts,
-    postMode,
-    scheduledFor,
-  ]);
+
 
   const handlePlatformToggle = (platform) => {
     if (!isSocialPlatformEnabled(platform)) {
@@ -630,33 +607,6 @@ Rules:
     };
   };
 
-  const runPreflightChecks = async ({ showSuccessToast = false } = {}) => {
-    const payload = buildPostPayload();
-
-    setCheckingPreflight(true);
-    try {
-      const response = await postsApi.preflight(payload);
-      const issues = response.data?.issues || [];
-      setPreflightIssues(issues);
-
-      if (issues.length > 0) {
-        toast.error(issues[0]?.message || 'Preflight checks failed');
-        return false;
-      }
-
-      if (showSuccessToast) {
-        toast.success('Preflight checks passed');
-      }
-      return true;
-    } catch (error) {
-      const message = error.response?.data?.error || 'Failed to run preflight checks';
-      toast.error(message);
-      return false;
-    } finally {
-      setCheckingPreflight(false);
-    }
-  };
-
   const handleSubmit = async () => {
     if (activePlatforms.length === 0) {
       toast.error('Select at least one platform');
@@ -741,11 +691,6 @@ Rules:
       }
     }
 
-    const preflightOk = await runPreflightChecks({ showSuccessToast: false });
-    if (!preflightOk) {
-      return;
-    }
-
     setSubmitting(true);
     try {
       await postsApi.create(buildPostPayload());
@@ -762,7 +707,6 @@ Rules:
       setPostThreadsToX(false);
       setPostThreadsToLinkedIn(false);
       setSelectedCrossPostTargetIds({ x: '', linkedin: '' });
-      setPreflightIssues([]);
     } catch (error) {
       const apiError = error.response?.data?.error;
       const apiCode = error.response?.data?.code;
@@ -1136,7 +1080,7 @@ Rules:
             </p>
             <p className="text-xs text-violet-800">
               Runs {postMode === 'schedule' ? 'when the scheduled Threads post publishes' : 'after the Threads post is published'}.
-              Cross-post currently supports only single-post Threads publishing.
+              Supports both single Threads posts and thread chains.
             </p>
             <label className="flex items-center justify-between gap-3 text-sm text-violet-900">
               <span>Cross-post Threads post to X ({xCrossPostStatusText})</span>
@@ -1222,11 +1166,6 @@ Rules:
                 </select>
               </label>
             )}
-            {threadsCrossPostBlockedByMode && (
-              <p className="text-xs text-violet-800">
-                Switch to single Threads post mode to enable X/LinkedIn cross-post.
-              </p>
-            )}
             {(postThreadsToX || postThreadsToLinkedIn) && (
               <label className="flex items-center justify-between gap-3 text-xs text-violet-800">
                 <span>Optimize formatting for cross-post targets</span>
@@ -1255,28 +1194,6 @@ Rules:
             <span className="font-medium text-gray-800">Media files:</span> {mediaUrls.length}
           </p>
         </div>
-
-        <button
-          type="button"
-          className="w-full h-10 rounded-lg border border-gray-300 bg-white text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-          disabled={checkingPreflight || uploading || submitting}
-          onClick={() => runPreflightChecks({ showSuccessToast: true })}
-        >
-          {checkingPreflight ? 'Running checks...' : 'Run Preflight Checks'}
-        </button>
-
-        {preflightIssues.length > 0 && (
-          <div className="rounded-lg border border-red-200 bg-red-50 p-3 space-y-1">
-            <p className="text-sm font-medium text-red-800">Fix these before posting:</p>
-            <ul className="list-disc pl-5 text-xs text-red-700 space-y-1">
-              {preflightIssues.map((issue, index) => (
-                <li key={`${issue.code || 'ISSUE'}-${index}`}>
-                  {issue.message} {issue.code ? `(${issue.code})` : ''}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
 
         <button
           type="button"

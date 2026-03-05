@@ -9,6 +9,7 @@ const WORKER_ENABLED = String(process.env.SOCIAL_SCHEDULE_WORKER_ENABLED || 'tru
 const WORKER_POLL_MS = Math.max(5000, Number.parseInt(process.env.SOCIAL_SCHEDULE_WORKER_POLL_MS || '15000', 10));
 const WORKER_BATCH_SIZE = Math.max(1, Number.parseInt(process.env.SOCIAL_SCHEDULE_WORKER_BATCH_SIZE || '5', 10));
 const THREADS_TEXT_MAX_CHARS = Math.max(120, Number.parseInt(process.env.THREADS_TEXT_MAX_CHARS || '500', 10));
+const THREADS_MAX_CHAIN_POSTS = Math.max(2, Number.parseInt(process.env.THREADS_MAX_CHAIN_POSTS || '30', 10));
 const X_CROSSPOST_TIMEOUT_MS = Number.parseInt(process.env.X_CROSSPOST_TIMEOUT_MS || '10000', 10);
 const LINKEDIN_CROSSPOST_TIMEOUT_MS = Number.parseInt(process.env.LINKEDIN_CROSSPOST_TIMEOUT_MS || '10000', 10);
 const INTERNAL_CALLER = 'social-genie-scheduler';
@@ -155,12 +156,30 @@ const ensureMetadataColumnSupport = async () => {
   return metadataColumnAvailable;
 };
 
-const crossPostToX = async ({ userId, teamId = null, content, mediaDetected = false, mediaUrls = [], targetAccountId = null }) => {
+const crossPostToX = async ({
+  userId,
+  teamId = null,
+  content,
+  postMode = 'single',
+  threadParts = [],
+  mediaDetected = false,
+  mediaUrls = [],
+  targetAccountId = null,
+}) => {
   const tweetGenieUrl = String(process.env.TWEET_GENIE_URL || '').trim();
   const internalApiKey = String(process.env.INTERNAL_API_KEY || '').trim();
   if (!tweetGenieUrl || !internalApiKey) return { status: 'skipped_not_configured' };
 
   try {
+    const normalizedThreadParts = Array.isArray(threadParts)
+      ? threadParts.map((part) => String(part || '').trim()).filter(Boolean).slice(0, 25)
+      : [];
+    const normalizedMode =
+      String(postMode || 'single').trim().toLowerCase() === 'thread' && normalizedThreadParts.length >= 2
+        ? 'thread'
+        : 'single';
+    const normalizedContent = String(content || '').trim();
+
     const { response, body } = await postInternalJson({
       endpoint: buildInternalServiceEndpoint(tweetGenieUrl, '/api/internal/twitter/cross-post'),
       userId,
@@ -168,8 +187,11 @@ const crossPostToX = async ({ userId, teamId = null, content, mediaDetected = fa
       internalApiKey,
       timeoutMs: X_CROSSPOST_TIMEOUT_MS,
       payload: {
-        postMode: 'single',
-        content,
+        postMode: normalizedMode,
+        content: normalizedMode === 'thread'
+          ? (normalizedThreadParts[0] || normalizedContent)
+          : normalizedContent,
+        threadParts: normalizedMode === 'thread' ? normalizedThreadParts : [],
         mediaDetected: Boolean(mediaDetected),
         sourcePlatform: 'threads_schedule',
         media: absolutizeSocialMediaUrlsForCrossPost(mediaUrls),
@@ -192,6 +214,7 @@ const crossPostToX = async ({ userId, teamId = null, content, mediaDetected = fa
       status: body?.status || 'posted',
       tweetId: body?.tweetId || null,
       tweetUrl: body?.tweetUrl || null,
+      resolvedAccountId: body?.accountId ? String(body.accountId) : null,
       mediaDetected: Boolean(mediaDetected),
       mediaStatus: typeof body?.mediaStatus === 'string' ? body.mediaStatus : (mediaDetected ? 'posted' : 'none'),
       mediaCount: Number.isFinite(Number(body?.mediaCount)) ? Number(body.mediaCount) : (mediaDetected ? undefined : 0),
@@ -203,12 +226,29 @@ const crossPostToX = async ({ userId, teamId = null, content, mediaDetected = fa
   }
 };
 
-const saveToTweetHistory = async ({ userId, teamId = null, content, tweetId = null, mediaDetected = false }) => {
+const saveToTweetHistory = async ({
+  userId,
+  teamId = null,
+  content,
+  tweetId = null,
+  postMode = 'single',
+  threadParts = [],
+  targetAccountId = null,
+  mediaDetected = false,
+}) => {
   const tweetGenieUrl = String(process.env.TWEET_GENIE_URL || '').trim();
   const internalApiKey = String(process.env.INTERNAL_API_KEY || '').trim();
   if (!tweetGenieUrl || !internalApiKey) return;
 
   try {
+    const normalizedThreadParts = Array.isArray(threadParts)
+      ? threadParts.map((part) => String(part || '').trim()).filter(Boolean).slice(0, 25)
+      : [];
+    const normalizedMode =
+      String(postMode || 'single').trim().toLowerCase() === 'thread' && normalizedThreadParts.length >= 2
+        ? 'thread'
+        : 'single';
+
     await postInternalJson({
       endpoint: buildInternalServiceEndpoint(tweetGenieUrl, '/api/internal/twitter/save-to-history'),
       userId,
@@ -218,6 +258,9 @@ const saveToTweetHistory = async ({ userId, teamId = null, content, tweetId = nu
         content,
         tweetId,
         sourcePlatform: 'threads_schedule',
+        postMode: normalizedMode,
+        threadParts: normalizedMode === 'thread' ? normalizedThreadParts : [],
+        ...(targetAccountId ? { targetAccountId: String(targetAccountId) } : {}),
         mediaDetected: Boolean(mediaDetected),
       },
     });
@@ -243,6 +286,7 @@ const crossPostToLinkedIn = async ({ userId, teamId = null, content, mediaUrls =
         media: absolutizeSocialMediaUrlsForCrossPost(mediaUrls),
         sourcePlatform: 'threads_schedule',
         ...(teamId && targetAccountId ? { targetLinkedinTeamAccountId: String(targetAccountId) } : {}),
+        ...(!teamId && targetAccountId ? { targetAccountId: String(targetAccountId) } : {}),
       },
     });
 
@@ -526,7 +570,19 @@ const publishScheduledPost = async (post) => {
     };
 
     if (xEnabled || linkedinEnabled) {
-      const sourceContent = caption || threadsSequence[0] || '';
+      const sourceMode =
+        String(post.threads_content_type || 'text').toLowerCase() === 'thread' ? 'thread' : 'single';
+      const sourceThreadParts =
+        sourceMode === 'thread'
+          ? (threadsSequence.length >= 2
+              ? threadsSequence
+              : splitTextByLimit(caption, THREADS_TEXT_MAX_CHARS).slice(0, THREADS_MAX_CHAIN_POSTS))
+          : [];
+      const sourceContent = sourceMode === 'thread'
+        ? (sourceThreadParts[0] || caption || threadsSequence[0] || '')
+        : (caption || threadsSequence[0] || '');
+      const linkedInSourceContent =
+        sourceMode === 'thread' ? sourceThreadParts.join('\n\n') : sourceContent;
       const routing =
         crossPostMeta.routing && typeof crossPostMeta.routing === 'object'
           ? crossPostMeta.routing
@@ -537,6 +593,8 @@ const publishScheduledPost = async (post) => {
           userId: post.user_id,
           teamId: post.team_id || null,
           content: sourceContent,
+          postMode: sourceMode,
+          threadParts: sourceThreadParts,
           mediaDetected,
           mediaUrls,
           targetAccountId: routing.x?.targetAccountId || null,
@@ -552,6 +610,9 @@ const publishScheduledPost = async (post) => {
             teamId: post.team_id || null,
             content: sourceContent,
             tweetId: crossPostResult.x.tweetId || null,
+            postMode: sourceMode,
+            threadParts: sourceThreadParts,
+            targetAccountId: xResult?.resolvedAccountId || routing.x?.targetAccountId || null,
             mediaDetected,
           });
         }
@@ -561,7 +622,7 @@ const publishScheduledPost = async (post) => {
         const linkedInResult = await crossPostToLinkedIn({
           userId: post.user_id,
           teamId: post.team_id || null,
-          content: sourceContent,
+          content: linkedInSourceContent,
           mediaUrls,
           targetAccountId: routing.linkedin?.targetAccountId || null,
         });

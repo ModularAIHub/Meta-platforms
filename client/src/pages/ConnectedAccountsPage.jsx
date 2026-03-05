@@ -201,7 +201,7 @@ const ConnectedAccountsPage = () => {
 
           {instagramLocked ? (
             <p className="text-xs text-gray-600 mt-4">
-              Locked in production. Available in development and after app review approval.
+              Locked in production. This platform will be enabled in a later rollout.
             </p>
           ) : (
             <div className="mt-4 border-t border-gray-200 pt-4 space-y-2">
@@ -303,7 +303,7 @@ const ConnectedAccountsPage = () => {
           </button>
           {youtubeLocked && (
             <p className="text-xs text-gray-600 mt-4">
-              Locked in production. Available in development and after app review approval.
+              Locked in production. This platform will be enabled in a later rollout.
             </p>
           )}
         </div>

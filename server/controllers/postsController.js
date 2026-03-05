@@ -7,6 +7,20 @@ import { publishYoutubeVideo } from '../services/youtubeService.js';
 import { mapSocialPublishError } from '../utils/publishErrors.js';
 
 const SUPPORTED_PLATFORMS = new Set(['instagram', 'youtube', 'threads']);
+const normalizePlatformMode = (value) => String(value || '').trim().toLowerCase();
+const resolveSocialPlatformMode = () => {
+  const explicitMode = normalizePlatformMode(process.env.SOCIAL_PLATFORM_MODE);
+  if (explicitMode === 'all' || explicitMode === 'threads_only') {
+    return explicitMode;
+  }
+
+  // Safer production default: keep Threads live, hold Instagram/YouTube until enabled.
+  return process.env.NODE_ENV === 'production' ? 'threads_only' : 'all';
+};
+const SOCIAL_PLATFORM_MODE = resolveSocialPlatformMode();
+const ENABLED_SOCIAL_PLATFORMS = SOCIAL_PLATFORM_MODE === 'threads_only'
+  ? new Set(['threads'])
+  : new Set(['instagram', 'youtube', 'threads']);
 const PLATFORM_CAPTION_LIMITS = {
   instagram: Math.max(120, Number.parseInt(process.env.INSTAGRAM_CAPTION_MAX_CHARS || '2200', 10)),
   threads: Math.max(120, Number.parseInt(process.env.THREADS_TEXT_MAX_CHARS || '500', 10)),
@@ -212,6 +226,8 @@ const crossPostThreadsToXNow = async ({
   teamId = null,
   targetAccountId = null,
   content,
+  postMode = 'single',
+  threadParts = [],
   mediaDetected = false,
   mediaUrls = [],
 }) => {
@@ -220,6 +236,15 @@ const crossPostThreadsToXNow = async ({
   if (!tweetGenieUrl || !internalApiKey) return { status: 'skipped_not_configured' };
 
   try {
+    const normalizedThreadParts = Array.isArray(threadParts)
+      ? threadParts.map((part) => String(part || '').trim()).filter(Boolean).slice(0, 25)
+      : [];
+    const normalizedMode =
+      String(postMode || 'single').trim().toLowerCase() === 'thread' && normalizedThreadParts.length >= 2
+        ? 'thread'
+        : 'single';
+    const normalizedContent = String(content || '').trim();
+
     const { response, body } = await postInternalJson({
       endpoint: buildInternalServiceEndpoint(tweetGenieUrl, '/api/internal/twitter/cross-post'),
       userId,
@@ -227,8 +252,11 @@ const crossPostThreadsToXNow = async ({
       internalApiKey,
       timeoutMs: X_CROSSPOST_TIMEOUT_MS,
       payload: {
-        postMode: 'single',
-        content,
+        postMode: normalizedMode,
+        content: normalizedMode === 'thread'
+          ? (normalizedThreadParts[0] || normalizedContent)
+          : normalizedContent,
+        threadParts: normalizedMode === 'thread' ? normalizedThreadParts : [],
         mediaDetected: Boolean(mediaDetected),
         sourcePlatform: 'threads_now',
         media: absolutizeSocialMediaUrlsForCrossPost(mediaUrls),
@@ -252,6 +280,7 @@ const crossPostThreadsToXNow = async ({
       status: body?.status || 'posted',
       tweetId: body?.tweetId || null,
       tweetUrl: body?.tweetUrl || null,
+      resolvedAccountId: body?.accountId ? String(body.accountId) : null,
       mediaDetected: Boolean(mediaDetected),
       mediaStatus: typeof body?.mediaStatus === 'string' ? body.mediaStatus : (mediaDetected ? 'posted' : 'none'),
       mediaCount: Number.isFinite(Number(body?.mediaCount)) ? Number(body.mediaCount) : (mediaDetected ? undefined : 0),
@@ -268,6 +297,9 @@ const saveThreadsCrossPostToTweetHistory = async ({
   teamId = null,
   content,
   tweetId = null,
+  postMode = 'single',
+  threadParts = [],
+  targetAccountId = null,
   mediaDetected = false,
 }) => {
   const tweetGenieUrl = String(process.env.TWEET_GENIE_URL || '').trim();
@@ -275,6 +307,14 @@ const saveThreadsCrossPostToTweetHistory = async ({
   if (!tweetGenieUrl || !internalApiKey) return;
 
   try {
+    const normalizedThreadParts = Array.isArray(threadParts)
+      ? threadParts.map((part) => String(part || '').trim()).filter(Boolean).slice(0, 25)
+      : [];
+    const normalizedMode =
+      String(postMode || 'single').trim().toLowerCase() === 'thread' && normalizedThreadParts.length >= 2
+        ? 'thread'
+        : 'single';
+
     await postInternalJson({
       endpoint: buildInternalServiceEndpoint(tweetGenieUrl, '/api/internal/twitter/save-to-history'),
       userId,
@@ -284,6 +324,9 @@ const saveThreadsCrossPostToTweetHistory = async ({
         content,
         tweetId,
         sourcePlatform: 'threads_now',
+        postMode: normalizedMode,
+        threadParts: normalizedMode === 'thread' ? normalizedThreadParts : [],
+        ...(targetAccountId ? { targetAccountId: String(targetAccountId) } : {}),
         mediaDetected: Boolean(mediaDetected),
       },
     });
@@ -348,7 +391,8 @@ const executeImmediateThreadsCrossPost = async ({
   teamId = null,
   sourceContent = '',
   mediaUrls = [],
-  isThreadChain = false,
+  postMode = 'single',
+  threadParts = [],
   metadata = null,
 }) => {
   const baseMetadata =
@@ -377,6 +421,20 @@ const executeImmediateThreadsCrossPost = async ({
   const xEnabled = Boolean(targets.x || targets.twitter);
   const linkedinEnabled = Boolean(targets.linkedin || targets.linkedIn);
   const mediaDetected = detectMediaForCrossPost(mediaUrls);
+  const normalizedSourceContent = String(sourceContent || '').trim();
+  const normalizedThreadParts = Array.isArray(threadParts)
+    ? threadParts.map((part) => String(part || '').trim()).filter(Boolean).slice(0, THREADS_MAX_CHAIN_POSTS)
+    : [];
+  const normalizedMode =
+    String(postMode || 'single').trim().toLowerCase() === 'thread' && normalizedThreadParts.length >= 2
+      ? 'thread'
+      : 'single';
+  const xSourceContent = normalizedMode === 'thread'
+    ? (normalizedThreadParts[0] || normalizedSourceContent)
+    : normalizedSourceContent;
+  const linkedInSourceContent = normalizedMode === 'thread'
+    ? normalizedThreadParts.join('\n\n')
+    : normalizedSourceContent;
   const crossPostResult = {
     x: {
       enabled: xEnabled,
@@ -393,52 +451,50 @@ const executeImmediateThreadsCrossPost = async ({
   };
 
   if (xEnabled || linkedinEnabled) {
-    if (isThreadChain) {
-      if (xEnabled) crossPostResult.x.status = 'skipped_individual_only';
-      if (linkedinEnabled) crossPostResult.linkedin.status = 'skipped_individual_only';
-    } else {
-      const normalizedContent = String(sourceContent || '').trim();
+    if (xEnabled) {
+      const xResult = await crossPostThreadsToXNow({
+        userId,
+        teamId,
+        targetAccountId: xTargetAccountId,
+        content: xSourceContent,
+        postMode: normalizedMode,
+        threadParts: normalizedThreadParts,
+        mediaDetected,
+        mediaUrls,
+      });
+      crossPostResult.x = {
+        ...crossPostResult.x,
+        ...xResult,
+        status: xResult?.status || 'failed',
+      };
 
-      if (xEnabled) {
-        const xResult = await crossPostThreadsToXNow({
+      if (crossPostResult.x.status === 'posted') {
+        await saveThreadsCrossPostToTweetHistory({
           userId,
           teamId,
-          targetAccountId: xTargetAccountId,
-          content: normalizedContent,
+          content: xSourceContent,
+          tweetId: crossPostResult.x.tweetId || null,
+          postMode: normalizedMode,
+          threadParts: normalizedThreadParts,
+          targetAccountId: xResult?.resolvedAccountId || xTargetAccountId || null,
           mediaDetected,
-          mediaUrls,
         });
-        crossPostResult.x = {
-          ...crossPostResult.x,
-          ...xResult,
-          status: xResult?.status || 'failed',
-        };
-
-        if (crossPostResult.x.status === 'posted') {
-          await saveThreadsCrossPostToTweetHistory({
-            userId,
-            teamId,
-            content: normalizedContent,
-            tweetId: crossPostResult.x.tweetId || null,
-            mediaDetected,
-          });
-        }
       }
+    }
 
-      if (linkedinEnabled) {
-        const linkedInResult = await crossPostThreadsToLinkedInNow({
-          userId,
-          teamId,
-          targetAccountId: linkedinTargetAccountId,
-          content: normalizedContent,
-          mediaUrls,
-        });
-        crossPostResult.linkedin = {
-          ...crossPostResult.linkedin,
-          ...linkedInResult,
-          status: linkedInResult?.status || 'failed',
-        };
-      }
+    if (linkedinEnabled) {
+      const linkedInResult = await crossPostThreadsToLinkedInNow({
+        userId,
+        teamId,
+        targetAccountId: linkedinTargetAccountId,
+        content: linkedInSourceContent,
+        mediaUrls,
+      });
+      crossPostResult.linkedin = {
+        ...crossPostResult.linkedin,
+        ...linkedInResult,
+        status: linkedInResult?.status || 'failed',
+      };
     }
   }
 
@@ -721,6 +777,13 @@ export const createPost = async (req, res) => {
     const unsupported = normalizedPlatforms.filter((platform) => !SUPPORTED_PLATFORMS.has(platform));
     if (unsupported.length > 0) {
       return res.status(400).json({ error: `Unsupported platforms: ${unsupported.join(', ')}` });
+    }
+    const disabledByMode = normalizedPlatforms.filter((platform) => !ENABLED_SOCIAL_PLATFORMS.has(platform));
+    if (disabledByMode.length > 0) {
+      return res.status(400).json({
+        error: `Platform(s) disabled for this deployment mode (${SOCIAL_PLATFORM_MODE}): ${disabledByMode.join(', ')}`,
+        code: 'PLATFORM_DISABLED_IN_MODE',
+      });
     }
 
     const normalizedCaption = String(caption || '').trim();
@@ -1095,7 +1158,8 @@ export const createPost = async (req, res) => {
             teamId,
             sourceContent: effectiveCaption || effectiveThreadsPosts[0] || '',
             mediaUrls,
-            isThreadChain: Boolean(isThreadsThread || (Array.isArray(threadPostIds) && threadPostIds.length > 1)),
+            postMode: isThreadsThread ? 'thread' : 'single',
+            threadParts: isThreadsThread ? effectiveThreadsPosts : [],
             metadata: resolvedThreadsCrossPostMetadata,
           });
         } catch (crossPostError) {
@@ -1245,6 +1309,13 @@ export const preflightPost = async (req, res) => {
     const unsupported = normalizedPlatforms.filter((platform) => !SUPPORTED_PLATFORMS.has(platform));
     if (unsupported.length > 0) {
       return res.status(400).json({ error: `Unsupported platforms: ${unsupported.join(', ')}`, code: 'PLATFORM_UNSUPPORTED' });
+    }
+    const disabledByMode = normalizedPlatforms.filter((platform) => !ENABLED_SOCIAL_PLATFORMS.has(platform));
+    if (disabledByMode.length > 0) {
+      return res.status(400).json({
+        error: `Platform(s) disabled for this deployment mode (${SOCIAL_PLATFORM_MODE}): ${disabledByMode.join(', ')}`,
+        code: 'PLATFORM_DISABLED_IN_MODE',
+      });
     }
 
     const issues = [];

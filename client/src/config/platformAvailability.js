@@ -6,6 +6,10 @@ const resolvePlatformMode = () => {
     return explicitMode;
   }
 
+  if (import.meta.env.PROD) {
+    return 'threads_only';
+  }
+
   // Default production behavior for the Meta app domain.
   if (typeof window !== 'undefined' && window.location.hostname === 'meta.suitegenie.in') {
     return 'threads_only';
@@ -25,4 +29,4 @@ export const isSocialPlatformEnabled = (platform) =>
   ENABLED_SOCIAL_PLATFORMS.includes(String(platform || '').toLowerCase());
 
 export const THREADS_INVITE_MODE_NOTICE =
-  'Threads is currently invite-only while Meta app review is in progress.';
+  'Threads is live. Instagram and YouTube remain disabled in production until their rollout is enabled.';

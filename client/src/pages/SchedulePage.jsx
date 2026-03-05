@@ -123,6 +123,74 @@ const statusClass = {
   deleted: 'bg-gray-100 text-gray-700',
 };
 
+const parseJsonObject = (value, fallback = {}) => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return { ...fallback, ...value };
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return { ...fallback, ...parsed };
+      }
+    } catch {
+      return { ...fallback };
+    }
+  }
+  return { ...fallback };
+};
+
+const getCrossPostStatusTone = (status) => {
+  const normalized = String(status || '').toLowerCase();
+  if (normalized === 'posted') return 'bg-emerald-100 text-emerald-700 border-emerald-200';
+  if (['failed', 'not_connected', 'timeout', 'failed_too_long', 'skipped_not_configured'].includes(normalized)) {
+    return 'bg-red-100 text-red-700 border-red-200';
+  }
+  if (normalized === 'disabled') return 'bg-gray-100 text-gray-600 border-gray-200';
+  return 'bg-amber-100 text-amber-700 border-amber-200';
+};
+
+const formatCrossPostStatusLabel = (status) => {
+  const normalized = String(status || '').toLowerCase();
+  if (!normalized) return 'pending';
+  if (normalized === 'not_connected') return 'not connected';
+  if (normalized === 'failed_too_long') return 'too long';
+  if (normalized === 'skipped_not_configured') return 'not configured';
+  return normalized.replace(/_/g, ' ');
+};
+
+const getCrossPostTargetsForPost = (post) => {
+  const metadata = parseJsonObject(post?.metadata, {});
+  const crossPostMeta =
+    metadata?.cross_post && typeof metadata.cross_post === 'object' ? metadata.cross_post : null;
+  if (!crossPostMeta) return [];
+
+  const targets = crossPostMeta.targets && typeof crossPostMeta.targets === 'object' ? crossPostMeta.targets : {};
+  const lastResult = crossPostMeta.last_result && typeof crossPostMeta.last_result === 'object'
+    ? crossPostMeta.last_result
+    : {};
+
+  const buildTarget = ({ key, alias = null, label }) => {
+    const enabled = Boolean(targets?.[key] || (alias ? targets?.[alias] : false));
+    if (!enabled) return null;
+
+    const result =
+      (lastResult?.[key] && typeof lastResult[key] === 'object' ? lastResult[key] : null) ||
+      (alias && lastResult?.[alias] && typeof lastResult[alias] === 'object' ? lastResult[alias] : null);
+
+    return {
+      key,
+      label,
+      status: String(result?.status || 'pending').toLowerCase(),
+    };
+  };
+
+  return [
+    buildTarget({ key: 'x', alias: 'twitter', label: 'X' }),
+    buildTarget({ key: 'linkedin', alias: 'linkedIn', label: 'LinkedIn' }),
+  ].filter(Boolean);
+};
+
 const SchedulePage = () => {
   const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const [posts, setPosts] = useState([]);
@@ -264,6 +332,14 @@ const SchedulePage = () => {
                         <div className="flex flex-wrap items-center gap-2">
                           {(post.platforms || []).map((platform) => (
                             <PlatformBadge key={`${post.id}-${platform}`} platform={platform} />
+                          ))}
+                          {getCrossPostTargetsForPost(post).map((target) => (
+                            <span
+                              key={`${post.id}-cp-${target.key}`}
+                              className={`inline-flex items-center rounded-full border px-2 py-1 text-xs font-medium ${getCrossPostStatusTone(target.status)}`}
+                            >
+                              {target.label}: {formatCrossPostStatusLabel(target.status)}
+                            </span>
                           ))}
                         </div>
                         <span className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ${statusClass[status] || 'bg-gray-100 text-gray-700'}`}>
