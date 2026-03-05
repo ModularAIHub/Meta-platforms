@@ -4,6 +4,7 @@ import {
   Sparkles,
   Send,
   Clock3,
+  Check,
   Instagram,
   Youtube,
   AtSign,
@@ -148,6 +149,26 @@ const parseGeneratedThreadPosts = (rawText) => {
   return splitTextByLimit(cleaned, THREADS_POST_MAX_CHARS).slice(0, THREADS_MAX_CHAIN_POSTS);
 };
 
+const ToggleSwitch = ({ checked, disabled = false, onToggle, label }) => (
+  <button
+    type="button"
+    role="switch"
+    aria-label={label}
+    aria-checked={checked}
+    disabled={disabled}
+    onClick={onToggle}
+    className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${
+      checked ? 'bg-blue-600' : 'bg-gray-300'
+    } ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+  >
+    <span
+      className={`inline-block h-5 w-5 rounded-full bg-white shadow transition ${
+        checked ? 'translate-x-5' : 'translate-x-1'
+      }`}
+    />
+  </button>
+);
+
 const CreatePostPage = () => {
   const { accounts, permissions } = useAccounts();
 
@@ -184,6 +205,10 @@ const CreatePostPage = () => {
   });
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showAiAssist, setShowAiAssist] = useState(false);
+  const detectedTimezone = useMemo(
+    () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+    []
+  );
 
   const connectedPlatformSet = useMemo(
     () => new Set(accounts.map((account) => account.platform)),
@@ -721,86 +746,120 @@ Rules:
   };
 
   return (
-    <div className="max-w-5xl space-y-6">
-      <div>
+    <div className="max-w-6xl space-y-6">
+      <div className="rounded-2xl border border-blue-100 bg-gradient-to-r from-blue-50 via-white to-sky-50 p-6">
         <h1 className="text-3xl font-bold text-gray-900">Create Post</h1>
         <p className="text-gray-600 mt-1">
           {IS_THREADS_ONLY_MODE
-            ? 'Threads-focused flow: choose account, write, upload, publish.'
-            : 'Simple flow: choose platforms, write, upload, publish.'}
+            ? 'Threads-focused workflow with optional X and LinkedIn distribution.'
+            : 'Choose platforms, build content, and publish with confidence.'}
         </p>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <span className="inline-flex items-center rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-700 border border-slate-200">
+            Platforms selected: {activePlatforms.length}
+          </span>
+          <span className="inline-flex items-center rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-700 border border-slate-200">
+            Publish mode: {postMode === 'now' ? 'Now' : 'Schedule'}
+          </span>
+          <span className="inline-flex items-center rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-700 border border-slate-200">
+            Threads mode: {isThreadsThread ? 'Thread chain' : 'Single post'}
+          </span>
+        </div>
       </div>
 
       {IS_THREADS_ONLY_MODE && (
-        <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-blue-800">
-          <p className="text-sm font-medium">Threads-only mode</p>
+        <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-blue-800">
+          <p className="text-sm font-semibold">Threads-only mode enabled</p>
           <p className="text-sm mt-1">{THREADS_INVITE_MODE_NOTICE}</p>
         </div>
       )}
 
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-6">
+        <div className="space-y-6">
       <div className="card space-y-4">
         <div className="flex items-center justify-between gap-3">
           <h2 className="text-lg font-semibold text-gray-900">1. Choose Platforms</h2>
-          <p className="text-xs text-gray-500">Cross-post is automatic when multiple are selected.</p>
+          <p className="text-xs text-gray-500">Select where this post should be published.</p>
         </div>
 
-        <div className={`grid grid-cols-1 ${IS_THREADS_ONLY_MODE ? 'sm:grid-cols-1' : 'sm:grid-cols-3'} gap-2`}>
+        <div className={`grid grid-cols-1 ${IS_THREADS_ONLY_MODE ? 'sm:grid-cols-1' : 'sm:grid-cols-3'} gap-3`}>
           {!IS_THREADS_ONLY_MODE && (
-            <label
-              className={`flex items-center justify-between rounded-lg border px-3 py-2 cursor-pointer ${
+            <button
+              type="button"
+              onClick={() => handlePlatformToggle('instagram')}
+              aria-pressed={Boolean(selectedPlatforms.instagram)}
+              className={`rounded-xl border px-4 py-3 text-left transition ${
                 selectedPlatforms.instagram
                   ? 'border-blue-300 bg-blue-50'
-                  : 'border-gray-200 bg-white'
+                  : 'border-gray-200 bg-white hover:border-gray-300'
               }`}
             >
-              <span className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
-                <Instagram className="h-4 w-4 text-pink-600" />
-                Instagram
-              </span>
-              <input
-                type="checkbox"
-                checked={Boolean(selectedPlatforms.instagram)}
-                onChange={() => handlePlatformToggle('instagram')}
-              />
-            </label>
+              <div className="flex items-start justify-between gap-2">
+                <span className="inline-flex items-center gap-2 text-sm font-semibold text-gray-800">
+                  <Instagram className="h-4 w-4 text-pink-600" />
+                  Instagram
+                </span>
+                {selectedPlatforms.instagram && (
+                  <span className="inline-flex items-center gap-1 text-xs font-semibold text-blue-700">
+                    <Check className="h-3.5 w-3.5" />
+                    Selected
+                  </span>
+                )}
+              </div>
+              <p className="mt-2 text-xs text-gray-500">Feed, reels, story, carousel</p>
+            </button>
           )}
 
-          <label
-            className={`flex items-center justify-between rounded-lg border px-3 py-2 cursor-pointer ${
+          <button
+            type="button"
+            onClick={() => handlePlatformToggle('threads')}
+            aria-pressed={Boolean(selectedPlatforms.threads)}
+            className={`rounded-xl border px-4 py-3 text-left transition ${
               selectedPlatforms.threads
                 ? 'border-blue-300 bg-blue-50'
-                : 'border-gray-200 bg-white'
+                : 'border-gray-200 bg-white hover:border-gray-300'
             }`}
           >
-            <span className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
-              <AtSign className="h-4 w-4 text-slate-700" />
-              Threads
-            </span>
-            <input
-              type="checkbox"
-              checked={Boolean(selectedPlatforms.threads)}
-              onChange={() => handlePlatformToggle('threads')}
-            />
-          </label>
+            <div className="flex items-start justify-between gap-2">
+              <span className="inline-flex items-center gap-2 text-sm font-semibold text-gray-800">
+                <AtSign className="h-4 w-4 text-slate-700" />
+                Threads
+              </span>
+              {selectedPlatforms.threads && (
+                <span className="inline-flex items-center gap-1 text-xs font-semibold text-blue-700">
+                  <Check className="h-3.5 w-3.5" />
+                  Selected
+                </span>
+              )}
+            </div>
+            <p className="mt-2 text-xs text-gray-500">Single posts and thread chains</p>
+          </button>
 
           {!IS_THREADS_ONLY_MODE && (
-            <label
-              className={`flex items-center justify-between rounded-lg border px-3 py-2 cursor-pointer ${
+            <button
+              type="button"
+              onClick={() => handlePlatformToggle('youtube')}
+              aria-pressed={Boolean(selectedPlatforms.youtube)}
+              className={`rounded-xl border px-4 py-3 text-left transition ${
                 selectedPlatforms.youtube
                   ? 'border-blue-300 bg-blue-50'
-                  : 'border-gray-200 bg-white'
+                  : 'border-gray-200 bg-white hover:border-gray-300'
               }`}
             >
-              <span className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
-                <Youtube className="h-4 w-4 text-red-600" />
-                YouTube
-              </span>
-              <input
-                type="checkbox"
-                checked={Boolean(selectedPlatforms.youtube)}
-                onChange={() => handlePlatformToggle('youtube')}
-              />
-            </label>
+              <div className="flex items-start justify-between gap-2">
+                <span className="inline-flex items-center gap-2 text-sm font-semibold text-gray-800">
+                  <Youtube className="h-4 w-4 text-red-600" />
+                  YouTube
+                </span>
+                {selectedPlatforms.youtube && (
+                  <span className="inline-flex items-center gap-1 text-xs font-semibold text-blue-700">
+                    <Check className="h-3.5 w-3.5" />
+                    Selected
+                  </span>
+                )}
+              </div>
+              <p className="mt-2 text-xs text-gray-500">Video and shorts publishing</p>
+            </button>
           )}
         </div>
 
@@ -821,7 +880,7 @@ Rules:
           <button
             type="button"
             onClick={() => setShowAdvanced((prev) => !prev)}
-            className="inline-flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900"
+            className="inline-flex items-center gap-2 rounded-md border border-gray-200 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50"
           >
             <SlidersHorizontal className="h-4 w-4" />
             {showAdvanced ? 'Hide advanced' : 'Show advanced'}
@@ -916,7 +975,7 @@ Rules:
           </button>
 
           {showAiAssist && (
-            <div className="space-y-2">
+            <div className="rounded-lg border border-blue-100 bg-blue-50 p-3 space-y-2">
               <div className="flex flex-col sm:flex-row gap-2">
                 <input
                   className="input"
@@ -937,8 +996,8 @@ Rules:
                 </button>
               </div>
               {isThreadsThread && (
-                <p className="text-xs text-gray-500">
-                  AI will fill the thread posts below. Edit any post before publishing.
+                <p className="text-xs text-blue-900">
+                  AI will fill the thread posts below. Review and edit each before publishing.
                 </p>
               )}
             </div>
@@ -1003,10 +1062,13 @@ Rules:
             : 'Media is optional for your current post settings.'}
         </p>
 
-        <label className="flex items-center justify-center w-full rounded-lg border-2 border-dashed border-gray-300 p-6 cursor-pointer hover:border-blue-400">
+        <label className={`flex items-center justify-center w-full rounded-xl border-2 border-dashed p-6 cursor-pointer transition ${
+          mediaRequiredNow ? 'border-blue-300 bg-blue-50/60 hover:border-blue-500' : 'border-gray-300 hover:border-blue-400'
+        }`}>
           <div className="text-center">
             <ImagePlus className="h-7 w-7 text-gray-500 mx-auto mb-2" />
-            <p className="text-sm text-gray-600">Click to select files (supports image/video)</p>
+            <p className="text-sm text-gray-700 font-medium">Click to select files</p>
+            <p className="text-xs text-gray-500 mt-1">Supports image and video uploads</p>
           </div>
           <input
             type="file"
@@ -1025,7 +1087,7 @@ Rules:
             {mediaUrls.map((media) => (
               <div
                 key={media.url}
-                className="flex items-center justify-between rounded-lg border border-gray-200 px-3 py-2"
+                className="flex items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2"
               >
                 <span className="text-sm text-gray-700 truncate mr-4">{media.name}</span>
                 <button
@@ -1044,165 +1106,218 @@ Rules:
       <div className="card space-y-4">
         <h2 className="text-lg font-semibold text-gray-900">4. Publish</h2>
 
-        <div className="space-y-2">
-          <label className="flex items-center gap-2 text-sm">
-            <input type="radio" checked={postMode === 'now'} onChange={() => setPostMode('now')} />
-            <Send className="h-4 w-4" />
-            Post now
-          </label>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => setPostMode('now')}
+            className={`rounded-lg border px-4 py-3 text-left transition ${
+              postMode === 'now'
+                ? 'border-blue-300 bg-blue-50'
+                : 'border-gray-200 hover:border-gray-300'
+            }`}
+          >
+            <p className="inline-flex items-center gap-2 text-sm font-semibold text-gray-800">
+              <Send className="h-4 w-4" />
+              Post now
+            </p>
+            <p className="text-xs text-gray-500 mt-1">Publish immediately after validation.</p>
+          </button>
 
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="radio"
-              checked={postMode === 'schedule'}
-              onChange={() => setPostMode('schedule')}
-            />
-            <Clock3 className="h-4 w-4" />
-            Schedule
-          </label>
+          <button
+            type="button"
+            onClick={() => setPostMode('schedule')}
+            className={`rounded-lg border px-4 py-3 text-left transition ${
+              postMode === 'schedule'
+                ? 'border-blue-300 bg-blue-50'
+                : 'border-gray-200 hover:border-gray-300'
+            }`}
+          >
+            <p className="inline-flex items-center gap-2 text-sm font-semibold text-gray-800">
+              <Clock3 className="h-4 w-4" />
+              Schedule
+            </p>
+            <p className="text-xs text-gray-500 mt-1">Queue for automatic publishing later.</p>
+          </button>
         </div>
 
         {postMode === 'schedule' && (
-          <div className="space-y-3">
+          <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 space-y-2">
+            <label className="block text-sm font-medium text-blue-900">Schedule date & time</label>
             <input
               type="datetime-local"
               className="input"
               value={scheduledFor}
               onChange={(event) => setScheduledFor(event.target.value)}
             />
+            <p className="text-xs text-blue-900">
+              Timezone auto-detected: <span className="font-semibold">{detectedTimezone}</span>. We convert to UTC before saving.
+            </p>
           </div>
         )}
 
         {selectedPlatforms.threads && (
-          <div className="rounded-lg border border-violet-200 bg-violet-50 p-3 space-y-2">
-            <p className="text-sm font-medium text-violet-900">
-              Threads cross-post to X / LinkedIn
-            </p>
-            <p className="text-xs text-violet-800">
-              Runs {postMode === 'schedule' ? 'when the scheduled Threads post publishes' : 'after the Threads post is published'}.
-              Supports both single Threads posts and thread chains.
-            </p>
-            <label className="flex items-center justify-between gap-3 text-sm text-violet-900">
-              <span>Cross-post Threads post to X ({xCrossPostStatusText})</span>
-              <input
-                type="checkbox"
-                checked={postThreadsToX}
-                disabled={xToggleDisabled}
-                onChange={() => {
-                  if (xToggleDisabled) return;
-                  setPostThreadsToX((value) => {
-                    const next = !value;
-                    if (next && !selectedCrossPostTargetIds.x && xTargetAccounts.length > 0) {
-                      setSelectedCrossPostTargetIds((previous) => ({
-                        ...previous,
-                        x: String(xTargetAccounts[0]?.id || ''),
-                      }));
-                    }
-                    return next;
-                  });
-                }}
-              />
-            </label>
-            {postThreadsToX && xCrossPostAvailable && xTargetAccounts.length > 0 && (
-              <label className="block text-xs text-violet-900 pl-1">
-                <span className="font-medium">Post to X account</span>
-                <select
-                  className="mt-1 w-full rounded-md border border-violet-200 bg-white px-2 py-1.5 text-xs text-gray-700"
-                  value={selectedCrossPostTargetIds.x}
-                  onChange={(event) =>
-                    setSelectedCrossPostTargetIds((previous) => ({
-                      ...previous,
-                      x: String(event.target.value || ''),
-                    }))
-                  }
-                >
-                  {xTargetAccounts.map((account) => (
-                    <option key={account.id} value={account.id}>
-                      {formatCrossPostAccountOption(account)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-            <label className="flex items-center justify-between gap-3 text-sm text-violet-900">
-              <span>Cross-post Threads post to LinkedIn ({linkedinCrossPostStatusText})</span>
-              <input
-                type="checkbox"
-                checked={postThreadsToLinkedIn}
-                disabled={linkedinToggleDisabled}
-                onChange={() => {
-                  if (linkedinToggleDisabled) return;
-                  setPostThreadsToLinkedIn((value) => {
-                    const next = !value;
-                    if (next && !selectedCrossPostTargetIds.linkedin && linkedinTargetAccounts.length > 0) {
-                      setSelectedCrossPostTargetIds((previous) => ({
-                        ...previous,
-                        linkedin: String(linkedinTargetAccounts[0]?.id || ''),
-                      }));
-                    }
-                    return next;
-                  });
-                }}
-              />
-            </label>
-            {postThreadsToLinkedIn && linkedinCrossPostAvailable && linkedinTargetAccounts.length > 0 && (
-              <label className="block text-xs text-violet-900 pl-1">
-                <span className="font-medium">Post to LinkedIn account</span>
-                <select
-                  className="mt-1 w-full rounded-md border border-violet-200 bg-white px-2 py-1.5 text-xs text-gray-700"
-                  value={selectedCrossPostTargetIds.linkedin}
-                  onChange={(event) =>
-                    setSelectedCrossPostTargetIds((previous) => ({
-                      ...previous,
-                      linkedin: String(event.target.value || ''),
-                    }))
-                  }
-                >
-                  {linkedinTargetAccounts.map((account) => (
-                    <option key={account.id} value={account.id}>
-                      {formatCrossPostAccountOption(account)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
+          <div className="rounded-xl border border-violet-200 bg-violet-50 p-3 space-y-3">
+            <div>
+              <p className="text-sm font-semibold text-violet-900">Threads cross-post to X / LinkedIn</p>
+              <p className="text-xs text-violet-800 mt-1">
+                Runs {postMode === 'schedule' ? 'when the scheduled Threads post publishes' : 'after the Threads post is published'}.
+                Supports both single Threads posts and thread chains.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <div className="rounded-lg border border-violet-200 bg-white p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-violet-900">Cross-post to X</p>
+                    <p className="text-xs text-violet-700">{xCrossPostStatusText}</p>
+                  </div>
+                  <ToggleSwitch
+                    checked={postThreadsToX}
+                    disabled={xToggleDisabled}
+                    label="Cross-post to X"
+                    onToggle={() => {
+                      if (xToggleDisabled) return;
+                      setPostThreadsToX((value) => {
+                        const next = !value;
+                        if (next && !selectedCrossPostTargetIds.x && xTargetAccounts.length > 0) {
+                          setSelectedCrossPostTargetIds((previous) => ({
+                            ...previous,
+                            x: String(xTargetAccounts[0]?.id || ''),
+                          }));
+                        }
+                        return next;
+                      });
+                    }}
+                  />
+                </div>
+                {postThreadsToX && xCrossPostAvailable && xTargetAccounts.length > 0 && (
+                  <label className="block text-xs text-violet-900 mt-3">
+                    <span className="font-medium">Post to X account</span>
+                    <select
+                      className="mt-1 w-full rounded-md border border-violet-200 bg-white px-2 py-1.5 text-xs text-gray-700"
+                      value={selectedCrossPostTargetIds.x}
+                      onChange={(event) =>
+                        setSelectedCrossPostTargetIds((previous) => ({
+                          ...previous,
+                          x: String(event.target.value || ''),
+                        }))
+                      }
+                    >
+                      {xTargetAccounts.map((account) => (
+                        <option key={account.id} value={account.id}>
+                          {formatCrossPostAccountOption(account)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+              </div>
+              <div className="rounded-lg border border-violet-200 bg-white p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-violet-900">Cross-post to LinkedIn</p>
+                    <p className="text-xs text-violet-700">{linkedinCrossPostStatusText}</p>
+                  </div>
+                  <ToggleSwitch
+                    checked={postThreadsToLinkedIn}
+                    disabled={linkedinToggleDisabled}
+                    label="Cross-post to LinkedIn"
+                    onToggle={() => {
+                      if (linkedinToggleDisabled) return;
+                      setPostThreadsToLinkedIn((value) => {
+                        const next = !value;
+                        if (next && !selectedCrossPostTargetIds.linkedin && linkedinTargetAccounts.length > 0) {
+                          setSelectedCrossPostTargetIds((previous) => ({
+                            ...previous,
+                            linkedin: String(linkedinTargetAccounts[0]?.id || ''),
+                          }));
+                        }
+                        return next;
+                      });
+                    }}
+                  />
+                </div>
+                {postThreadsToLinkedIn && linkedinCrossPostAvailable && linkedinTargetAccounts.length > 0 && (
+                  <label className="block text-xs text-violet-900 mt-3">
+                    <span className="font-medium">Post to LinkedIn account</span>
+                    <select
+                      className="mt-1 w-full rounded-md border border-violet-200 bg-white px-2 py-1.5 text-xs text-gray-700"
+                      value={selectedCrossPostTargetIds.linkedin}
+                      onChange={(event) =>
+                        setSelectedCrossPostTargetIds((previous) => ({
+                          ...previous,
+                          linkedin: String(event.target.value || ''),
+                        }))
+                      }
+                    >
+                      {linkedinTargetAccounts.map((account) => (
+                        <option key={account.id} value={account.id}>
+                          {formatCrossPostAccountOption(account)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+              </div>
+            </div>
             {(postThreadsToX || postThreadsToLinkedIn) && (
-              <label className="flex items-center justify-between gap-3 text-xs text-violet-800">
-                <span>Optimize formatting for cross-post targets</span>
-                <input
-                  type="checkbox"
-                  checked={optimizeCrossPost}
-                  onChange={() => setOptimizeCrossPost((value) => !value)}
-                />
-              </label>
+              <div className="rounded-lg border border-violet-200 bg-white p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-medium text-violet-900">Optimize cross-post formatting</p>
+                    <p className="text-xs text-violet-700">Adjust punctuation and breaks for target platforms.</p>
+                  </div>
+                  <ToggleSwitch
+                    checked={optimizeCrossPost}
+                    label="Optimize cross-post formatting"
+                    onToggle={() => setOptimizeCrossPost((value) => !value)}
+                  />
+                </div>
+              </div>
             )}
           </div>
         )}
 
-        <div className="rounded-lg bg-gray-50 border border-gray-200 p-3 text-sm text-gray-600 space-y-1">
-          <p>
-            <span className="font-medium text-gray-800">Platforms:</span>{' '}
-            {activePlatforms.length > 0
-              ? activePlatforms.map((platform) => platformLabel[platform]).join(', ')
-              : 'None selected'}
-          </p>
-          <p>
-            <span className="font-medium text-gray-800">Cross-post:</span>{' '}
-            {activePlatforms.length > 1 || hasThreadsCrossPostTargetsSelected ? 'Yes' : 'No'}
-          </p>
-          <p>
-            <span className="font-medium text-gray-800">Media files:</span> {mediaUrls.length}
-          </p>
+      </div>
         </div>
+        <aside className="space-y-4 xl:sticky xl:top-6 h-fit">
+          <div className="card space-y-3">
+            <h3 className="text-base font-semibold text-gray-900">Post Summary</h3>
+            <div className="space-y-2 text-sm">
+              <p className="text-gray-700">
+                <span className="font-medium text-gray-900">Platforms:</span>{' '}
+                {activePlatforms.length > 0
+                  ? activePlatforms.map((platform) => platformLabel[platform]).join(', ')
+                  : 'None selected'}
+              </p>
+              <p className="text-gray-700">
+                <span className="font-medium text-gray-900">Publish:</span>{' '}
+                {postMode === 'now' ? 'Now' : 'Scheduled'}
+              </p>
+              {postMode === 'schedule' && (
+                <p className="text-gray-700">
+                  <span className="font-medium text-gray-900">Timezone:</span> {detectedTimezone}
+                </p>
+              )}
+              <p className="text-gray-700">
+                <span className="font-medium text-gray-900">Cross-post:</span>{' '}
+                {activePlatforms.length > 1 || hasThreadsCrossPostTargetsSelected ? 'Yes' : 'No'}
+              </p>
+              <p className="text-gray-700">
+                <span className="font-medium text-gray-900">Media files:</span> {mediaUrls.length}
+              </p>
+            </div>
+          </div>
 
-        <button
-          type="button"
-          className="btn btn-primary w-full h-10"
-          disabled={submitting || uploading}
-          onClick={handleSubmit}
-        >
-          {submitting ? 'Submitting...' : postMode === 'now' ? 'Post Now' : 'Schedule Post'}
-        </button>
+          <button
+            type="button"
+            className="btn btn-primary w-full h-11 text-sm font-semibold"
+            disabled={submitting || uploading}
+            onClick={handleSubmit}
+          >
+            {submitting ? 'Submitting...' : postMode === 'now' ? 'Post Now' : 'Schedule Post'}
+          </button>
+        </aside>
       </div>
     </div>
   );
