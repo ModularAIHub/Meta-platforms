@@ -33,6 +33,8 @@ const THREADS_AUTO_SPLIT_MAX_CHARS = Math.max(
 const THREADS_MAX_CHAIN_POSTS = Math.max(2, Number.parseInt(process.env.THREADS_MAX_CHAIN_POSTS || '30', 10));
 const X_CROSSPOST_TIMEOUT_MS = Number.parseInt(process.env.X_CROSSPOST_TIMEOUT_MS || '10000', 10);
 const LINKEDIN_CROSSPOST_TIMEOUT_MS = Number.parseInt(process.env.LINKEDIN_CROSSPOST_TIMEOUT_MS || '10000', 10);
+const X_CROSSPOST_MAX_MEDIA_ITEMS = Math.max(1, Number.parseInt(process.env.X_CROSSPOST_MAX_MEDIA_ITEMS || '4', 10));
+const LINKEDIN_CROSSPOST_MAX_MEDIA_ITEMS = Math.max(1, Number.parseInt(process.env.LINKEDIN_CROSSPOST_MAX_MEDIA_ITEMS || '9', 10));
 const INTERNAL_CALLER = 'social-genie-api';
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.m4v', '.webm', '.avi', '.mpeg', '.mpg']);
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -186,17 +188,31 @@ const postInternalJson = async ({ endpoint, userId, teamId = null, internalApiKe
   }
 };
 
-const normalizeCrossPostMedia = (value) => {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((item) => (typeof item === 'string' ? item.trim() : ''))
-    .filter(Boolean)
-    .slice(0, 4);
+const normalizeCrossPostMediaItem = (value) => {
+  if (typeof value === 'string') return value.trim();
+  if (!value || typeof value !== 'object') return '';
+
+  const urlLikeFields = ['url', 'mediaUrl', 'media_url', 'secure_url', 'src', 'href'];
+  for (const field of urlLikeFields) {
+    const candidate = typeof value[field] === 'string' ? value[field].trim() : '';
+    if (candidate) return candidate;
+  }
+
+  return '';
 };
 
-const absolutizeSocialMediaUrlsForCrossPost = (mediaUrls = []) => {
+const normalizeCrossPostMedia = (value, maxItems = X_CROSSPOST_MAX_MEDIA_ITEMS) => {
+  if (!Array.isArray(value)) return [];
+  const limit = Number.isFinite(maxItems) && maxItems > 0 ? Math.floor(maxItems) : X_CROSSPOST_MAX_MEDIA_ITEMS;
+  return value
+    .map((item) => normalizeCrossPostMediaItem(item))
+    .filter(Boolean)
+    .slice(0, limit);
+};
+
+const absolutizeSocialMediaUrlsForCrossPost = (mediaUrls = [], maxItems = X_CROSSPOST_MAX_MEDIA_ITEMS) => {
   const baseUrl = String(process.env.SOCIAL_GENIE_URL || '').trim();
-  return normalizeCrossPostMedia(mediaUrls)
+  return normalizeCrossPostMedia(mediaUrls, maxItems)
     .map((item) => {
       if (/^https?:\/\//i.test(item) || item.startsWith('data:')) {
         return item;
@@ -259,7 +275,7 @@ const crossPostThreadsToXNow = async ({
         threadParts: normalizedMode === 'thread' ? normalizedThreadParts : [],
         mediaDetected: Boolean(mediaDetected),
         sourcePlatform: 'threads_now',
-        media: absolutizeSocialMediaUrlsForCrossPost(mediaUrls),
+        media: absolutizeSocialMediaUrlsForCrossPost(mediaUrls, X_CROSSPOST_MAX_MEDIA_ITEMS),
         ...(targetAccountId ? { targetAccountId: String(targetAccountId) } : {}),
       },
     });
@@ -355,7 +371,7 @@ const crossPostThreadsToLinkedInNow = async ({
       timeoutMs: LINKEDIN_CROSSPOST_TIMEOUT_MS,
         payload: {
           content,
-          media: absolutizeSocialMediaUrlsForCrossPost(mediaUrls),
+          media: absolutizeSocialMediaUrlsForCrossPost(mediaUrls, LINKEDIN_CROSSPOST_MAX_MEDIA_ITEMS),
           sourcePlatform: 'threads_now',
           ...(teamId && targetAccountId ? { targetLinkedinTeamAccountId: String(targetAccountId) } : {}),
           ...(!teamId && targetAccountId ? { targetAccountId: String(targetAccountId) } : {}),
