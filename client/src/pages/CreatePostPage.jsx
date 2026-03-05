@@ -401,6 +401,13 @@ const CreatePostPage = () => {
     : linkedinCrossPostAvailable
       ? 'Connected'
       : getCrossPostReasonLabel(crossPostStatus.targets.linkedin.reason);
+  const crossPostRequiresThreads = !selectedPlatforms.threads;
+  const xCrossPostStatusDisplay = crossPostRequiresThreads
+    ? 'Enable Threads first'
+    : xCrossPostStatusText;
+  const linkedinCrossPostStatusDisplay = crossPostRequiresThreads
+    ? 'Enable Threads first'
+    : linkedinCrossPostStatusText;
 
   useEffect(() => {
     setSelectedCrossPostTargetIds((previous) => {
@@ -872,6 +879,145 @@ Rules:
             first.
           </div>
         )}
+
+        <div className="rounded-xl border border-violet-200 bg-violet-50 p-3 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-violet-900">Cross-post Targets (from Threads)</p>
+              <p className="text-xs text-violet-800 mt-1">
+                Select where Threads posts should also be distributed.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className={`rounded-lg border p-3 ${
+              postThreadsToX ? 'border-violet-300 bg-white' : 'border-violet-200 bg-white'
+            }`}>
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-violet-900 inline-flex items-center gap-2">
+                    <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-slate-900 text-[10px] font-semibold text-white">
+                      X
+                    </span>
+                    X
+                  </p>
+                  <p className="text-xs text-violet-700 truncate">{xCrossPostStatusDisplay}</p>
+                </div>
+                <ToggleSwitch
+                  checked={postThreadsToX}
+                  disabled={crossPostRequiresThreads || xToggleDisabled}
+                  label="Cross-post to X"
+                  onToggle={() => {
+                    if (crossPostRequiresThreads || xToggleDisabled) return;
+                    setPostThreadsToX((value) => {
+                      const next = !value;
+                      if (next && !selectedCrossPostTargetIds.x && xTargetAccounts.length > 0) {
+                        setSelectedCrossPostTargetIds((previous) => ({
+                          ...previous,
+                          x: String(xTargetAccounts[0]?.id || ''),
+                        }));
+                      }
+                      return next;
+                    });
+                  }}
+                />
+              </div>
+              {postThreadsToX && xCrossPostAvailable && xTargetAccounts.length > 0 && (
+                <label className="block text-xs text-violet-900 mt-3">
+                  <span className="font-medium">Post to X account</span>
+                  <select
+                    className="mt-1 w-full rounded-md border border-violet-200 bg-white px-2 py-1.5 text-xs text-gray-700"
+                    value={selectedCrossPostTargetIds.x}
+                    onChange={(event) =>
+                      setSelectedCrossPostTargetIds((previous) => ({
+                        ...previous,
+                        x: String(event.target.value || ''),
+                      }))
+                    }
+                  >
+                    {xTargetAccounts.map((account) => (
+                      <option key={account.id} value={account.id}>
+                        {formatCrossPostAccountOption(account)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+            </div>
+
+            <div className={`rounded-lg border p-3 ${
+              postThreadsToLinkedIn ? 'border-violet-300 bg-white' : 'border-violet-200 bg-white'
+            }`}>
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-violet-900 inline-flex items-center gap-2">
+                    <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-sky-600 text-[10px] font-semibold text-white">
+                      in
+                    </span>
+                    LinkedIn
+                  </p>
+                  <p className="text-xs text-violet-700 truncate">{linkedinCrossPostStatusDisplay}</p>
+                </div>
+                <ToggleSwitch
+                  checked={postThreadsToLinkedIn}
+                  disabled={crossPostRequiresThreads || linkedinToggleDisabled}
+                  label="Cross-post to LinkedIn"
+                  onToggle={() => {
+                    if (crossPostRequiresThreads || linkedinToggleDisabled) return;
+                    setPostThreadsToLinkedIn((value) => {
+                      const next = !value;
+                      if (next && !selectedCrossPostTargetIds.linkedin && linkedinTargetAccounts.length > 0) {
+                        setSelectedCrossPostTargetIds((previous) => ({
+                          ...previous,
+                          linkedin: String(linkedinTargetAccounts[0]?.id || ''),
+                        }));
+                      }
+                      return next;
+                    });
+                  }}
+                />
+              </div>
+              {postThreadsToLinkedIn && linkedinCrossPostAvailable && linkedinTargetAccounts.length > 0 && (
+                <label className="block text-xs text-violet-900 mt-3">
+                  <span className="font-medium">Post to LinkedIn account</span>
+                  <select
+                    className="mt-1 w-full rounded-md border border-violet-200 bg-white px-2 py-1.5 text-xs text-gray-700"
+                    value={selectedCrossPostTargetIds.linkedin}
+                    onChange={(event) =>
+                      setSelectedCrossPostTargetIds((previous) => ({
+                        ...previous,
+                        linkedin: String(event.target.value || ''),
+                      }))
+                    }
+                  >
+                    {linkedinTargetAccounts.map((account) => (
+                      <option key={account.id} value={account.id}>
+                        {formatCrossPostAccountOption(account)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+            </div>
+          </div>
+
+          {(postThreadsToX || postThreadsToLinkedIn) && (
+            <div className="rounded-lg border border-violet-200 bg-white p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-medium text-violet-900">Optimize cross-post formatting</p>
+                  <p className="text-xs text-violet-700">Adjust punctuation and breaks for target platforms.</p>
+                </div>
+                <ToggleSwitch
+                  checked={optimizeCrossPost}
+                  label="Optimize cross-post formatting"
+                  onToggle={() => setOptimizeCrossPost((value) => !value)}
+                />
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="card space-y-4">
@@ -1152,129 +1298,6 @@ Rules:
             <p className="text-xs text-blue-900">
               Timezone auto-detected: <span className="font-semibold">{detectedTimezone}</span>. We convert to UTC before saving.
             </p>
-          </div>
-        )}
-
-        {selectedPlatforms.threads && (
-          <div className="rounded-xl border border-violet-200 bg-violet-50 p-3 space-y-3">
-            <div>
-              <p className="text-sm font-semibold text-violet-900">Threads cross-post to X / LinkedIn</p>
-              <p className="text-xs text-violet-800 mt-1">
-                Runs {postMode === 'schedule' ? 'when the scheduled Threads post publishes' : 'after the Threads post is published'}.
-                Supports both single Threads posts and thread chains.
-              </p>
-            </div>
-            <div className="space-y-2">
-              <div className="rounded-lg border border-violet-200 bg-white p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-medium text-violet-900">Cross-post to X</p>
-                    <p className="text-xs text-violet-700">{xCrossPostStatusText}</p>
-                  </div>
-                  <ToggleSwitch
-                    checked={postThreadsToX}
-                    disabled={xToggleDisabled}
-                    label="Cross-post to X"
-                    onToggle={() => {
-                      if (xToggleDisabled) return;
-                      setPostThreadsToX((value) => {
-                        const next = !value;
-                        if (next && !selectedCrossPostTargetIds.x && xTargetAccounts.length > 0) {
-                          setSelectedCrossPostTargetIds((previous) => ({
-                            ...previous,
-                            x: String(xTargetAccounts[0]?.id || ''),
-                          }));
-                        }
-                        return next;
-                      });
-                    }}
-                  />
-                </div>
-                {postThreadsToX && xCrossPostAvailable && xTargetAccounts.length > 0 && (
-                  <label className="block text-xs text-violet-900 mt-3">
-                    <span className="font-medium">Post to X account</span>
-                    <select
-                      className="mt-1 w-full rounded-md border border-violet-200 bg-white px-2 py-1.5 text-xs text-gray-700"
-                      value={selectedCrossPostTargetIds.x}
-                      onChange={(event) =>
-                        setSelectedCrossPostTargetIds((previous) => ({
-                          ...previous,
-                          x: String(event.target.value || ''),
-                        }))
-                      }
-                    >
-                      {xTargetAccounts.map((account) => (
-                        <option key={account.id} value={account.id}>
-                          {formatCrossPostAccountOption(account)}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                )}
-              </div>
-              <div className="rounded-lg border border-violet-200 bg-white p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-medium text-violet-900">Cross-post to LinkedIn</p>
-                    <p className="text-xs text-violet-700">{linkedinCrossPostStatusText}</p>
-                  </div>
-                  <ToggleSwitch
-                    checked={postThreadsToLinkedIn}
-                    disabled={linkedinToggleDisabled}
-                    label="Cross-post to LinkedIn"
-                    onToggle={() => {
-                      if (linkedinToggleDisabled) return;
-                      setPostThreadsToLinkedIn((value) => {
-                        const next = !value;
-                        if (next && !selectedCrossPostTargetIds.linkedin && linkedinTargetAccounts.length > 0) {
-                          setSelectedCrossPostTargetIds((previous) => ({
-                            ...previous,
-                            linkedin: String(linkedinTargetAccounts[0]?.id || ''),
-                          }));
-                        }
-                        return next;
-                      });
-                    }}
-                  />
-                </div>
-                {postThreadsToLinkedIn && linkedinCrossPostAvailable && linkedinTargetAccounts.length > 0 && (
-                  <label className="block text-xs text-violet-900 mt-3">
-                    <span className="font-medium">Post to LinkedIn account</span>
-                    <select
-                      className="mt-1 w-full rounded-md border border-violet-200 bg-white px-2 py-1.5 text-xs text-gray-700"
-                      value={selectedCrossPostTargetIds.linkedin}
-                      onChange={(event) =>
-                        setSelectedCrossPostTargetIds((previous) => ({
-                          ...previous,
-                          linkedin: String(event.target.value || ''),
-                        }))
-                      }
-                    >
-                      {linkedinTargetAccounts.map((account) => (
-                        <option key={account.id} value={account.id}>
-                          {formatCrossPostAccountOption(account)}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                )}
-              </div>
-            </div>
-            {(postThreadsToX || postThreadsToLinkedIn) && (
-              <div className="rounded-lg border border-violet-200 bg-white p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-xs font-medium text-violet-900">Optimize cross-post formatting</p>
-                    <p className="text-xs text-violet-700">Adjust punctuation and breaks for target platforms.</p>
-                  </div>
-                  <ToggleSwitch
-                    checked={optimizeCrossPost}
-                    label="Optimize cross-post formatting"
-                    onToggle={() => setOptimizeCrossPost((value) => !value)}
-                  />
-                </div>
-              </div>
-            )}
           </div>
         )}
 
