@@ -15,8 +15,9 @@ import {
 import toast from 'react-hot-toast';
 import { aiApi, crossPostApi, mediaApi, postsApi } from '../utils/api';
 import { useAccounts } from '../contexts/AccountContext';
+import { useAuth } from '../contexts/AuthContext';
 import {
-  ENABLED_SOCIAL_PLATFORMS,
+  getSocialPlatformUnavailableMessage,
   IS_THREADS_ONLY_MODE,
   THREADS_INVITE_MODE_NOTICE,
   isSocialPlatformEnabled,
@@ -34,10 +35,16 @@ const PLATFORM_CAPTION_LIMITS = {
   youtube: 5000,
 };
 
-const DEFAULT_PLATFORM_SELECTION = ENABLED_SOCIAL_PLATFORMS.reduce((accumulator, platform) => {
-  accumulator[platform] = false;
-  return accumulator;
-}, {});
+const ALL_SOCIAL_PLATFORMS = ['instagram', 'threads', 'youtube'];
+
+const createEmptyPlatformSelection = () => ({
+  instagram: false,
+  threads: false,
+  youtube: false,
+});
+
+const arePlatformSelectionsEqual = (left = {}, right = {}) =>
+  ALL_SOCIAL_PLATFORMS.every((platform) => Boolean(left[platform]) === Boolean(right[platform]));
 
 const THREADS_POST_MAX_CHARS = 500;
 const THREADS_AUTO_SPLIT_MAX_CHARS = 10000;
@@ -171,6 +178,7 @@ const ToggleSwitch = ({ checked, disabled = false, onToggle, label }) => (
 
 const CreatePostPage = () => {
   const { accounts, permissions } = useAccounts();
+  const { user } = useAuth();
 
   const [caption, setCaption] = useState('');
   const [aiPrompt, setAiPrompt] = useState('');
@@ -179,7 +187,7 @@ const CreatePostPage = () => {
   const [generating, setGenerating] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  const [selectedPlatforms, setSelectedPlatforms] = useState(DEFAULT_PLATFORM_SELECTION);
+  const [selectedPlatforms, setSelectedPlatforms] = useState(() => createEmptyPlatformSelection());
 
   const [instagramType, setInstagramType] = useState('feed');
   const [youtubeType, setYoutubeType] = useState('video');
@@ -215,28 +223,60 @@ const CreatePostPage = () => {
     [accounts]
   );
 
+  const platformAccessContext = useMemo(
+    () => ({
+      email: user?.email || '',
+      id: user?.id || '',
+    }),
+    [user?.email, user?.id]
+  );
+
+  const instagramEnabled = useMemo(
+    () => isSocialPlatformEnabled('instagram', platformAccessContext),
+    [platformAccessContext]
+  );
+  const youtubeEnabled = useMemo(
+    () => isSocialPlatformEnabled('youtube', platformAccessContext),
+    [platformAccessContext]
+  );
+  const enabledPlatforms = useMemo(
+    () =>
+      ALL_SOCIAL_PLATFORMS.filter((platform) =>
+        isSocialPlatformEnabled(platform, platformAccessContext)
+      ),
+    [platformAccessContext]
+  );
+  const platformGridClass = useMemo(() => {
+    if (enabledPlatforms.length <= 1) return 'sm:grid-cols-1';
+    if (enabledPlatforms.length === 2) return 'sm:grid-cols-2';
+    return 'sm:grid-cols-3';
+  }, [enabledPlatforms.length]);
+
   useEffect(() => {
     setSelectedPlatforms((prev) => {
-      if (Object.values(prev).some(Boolean)) {
-        return prev;
-      }
+      const next = createEmptyPlatformSelection();
+      const hasExistingEnabledSelection = enabledPlatforms.some((platform) => Boolean(prev[platform]));
 
-      const next = { ...DEFAULT_PLATFORM_SELECTION };
-
-      for (const account of accounts) {
-        const platform = String(account?.platform || '').toLowerCase();
-        if (platform in next) {
-          next[platform] = true;
+      if (hasExistingEnabledSelection) {
+        for (const platform of enabledPlatforms) {
+          next[platform] = Boolean(prev[platform]);
+        }
+      } else {
+        for (const account of accounts) {
+          const platform = String(account?.platform || '').toLowerCase();
+          if (enabledPlatforms.includes(platform)) {
+            next[platform] = true;
+          }
         }
       }
 
-      return next;
+      return arePlatformSelectionsEqual(prev, next) ? prev : next;
     });
-  }, [accounts]);
+  }, [accounts, enabledPlatforms]);
 
   const activePlatforms = useMemo(
-    () => Object.keys(selectedPlatforms).filter((platform) => selectedPlatforms[platform]),
-    [selectedPlatforms]
+    () => enabledPlatforms.filter((platform) => selectedPlatforms[platform]),
+    [enabledPlatforms, selectedPlatforms]
   );
 
   const disconnectedPlatforms = useMemo(
@@ -469,8 +509,8 @@ const CreatePostPage = () => {
 
 
   const handlePlatformToggle = (platform) => {
-    if (!isSocialPlatformEnabled(platform)) {
-      toast.error('This platform is not available in production yet.');
+    if (!isSocialPlatformEnabled(platform, platformAccessContext)) {
+      toast.error(getSocialPlatformUnavailableMessage(platform));
       return;
     }
 
@@ -789,8 +829,8 @@ Rules:
           <p className="text-xs text-gray-500">Select where this post should be published.</p>
         </div>
 
-        <div className={`grid grid-cols-1 ${IS_THREADS_ONLY_MODE ? 'sm:grid-cols-1' : 'sm:grid-cols-3'} gap-3`}>
-          {!IS_THREADS_ONLY_MODE && (
+        <div className={`grid grid-cols-1 ${platformGridClass} gap-3`}>
+          {instagramEnabled && (
             <button
               type="button"
               onClick={() => handlePlatformToggle('instagram')}
@@ -842,7 +882,7 @@ Rules:
             <p className="mt-2 text-xs text-gray-500">Single posts and thread chains</p>
           </button>
 
-          {!IS_THREADS_ONLY_MODE && (
+          {youtubeEnabled && (
             <button
               type="button"
               onClick={() => handlePlatformToggle('youtube')}

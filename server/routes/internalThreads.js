@@ -124,6 +124,9 @@ const isTokenExpired = (tokenExpiresAt) => {
 };
 
 const trimText = (value, maxLength = 5000) => String(value || '').trim().slice(0, maxLength);
+const normalizeWorkspaceStatus = (value) => String(value || '').trim().toLowerCase();
+const isMissingRelation = (error) =>
+  error?.code === '42P01' || String(error?.message || '').toLowerCase().includes('does not exist');
 
 const normalizeCrossPostMediaInputs = (value) => {
   if (!Array.isArray(value)) return [];
@@ -520,6 +523,118 @@ router.get('/targets', ensureInternalRequest, async (req, res) => {
     return res.status(500).json({
       error: 'Failed to fetch Threads targets',
       code: 'THREADS_TARGETS_FAILED',
+    });
+  }
+});
+
+router.post('/workspace/snapshot', ensureInternalRequest, async (req, res) => {
+  const platformUserId = resolvePlatformUserId(req);
+  const platformTeamId = resolvePlatformTeamId(req);
+  const limit = Math.max(1, Math.min(100, Number(req.body?.limit || 50) || 50));
+
+  if (!platformUserId) {
+    return res.status(400).json({
+      error: 'x-platform-user-id is required',
+      code: 'PLATFORM_USER_ID_REQUIRED',
+    });
+  }
+
+  try {
+    const params = [];
+    const filters = [`sp.status <> 'deleted'`];
+
+    if (platformTeamId) {
+      params.push(platformTeamId);
+      filters.push(`sp.team_id::text = $${params.length}::text`);
+    } else {
+      params.push(platformUserId);
+      filters.push(`sp.user_id = $${params.length}`);
+      filters.push(`(sp.team_id IS NULL OR sp.team_id::text = '')`);
+    }
+
+    params.push(limit);
+    let rows = [];
+    try {
+      const result = await query(
+        `SELECT
+           sp.id,
+           sp.caption,
+           sp.status,
+           sp.platforms,
+           sp.threads_content_type,
+           sp.scheduled_for,
+           sp.error_message,
+           sp.team_id,
+           sp.created_at,
+           sp.updated_at,
+           sp.posted_at
+         FROM social_posts sp
+         WHERE ${filters.join(' AND ')}
+         ORDER BY COALESCE(sp.scheduled_for, sp.created_at) ASC
+         LIMIT $${params.length}`,
+        params
+      );
+      rows = result.rows || [];
+    } catch (error) {
+      if (!isMissingRelation(error)) throw error;
+    }
+
+    const queueStatuses = new Set(['draft', 'queued', 'pending_approval', 'needs_approval']);
+    const queue = [];
+    const calendar = [];
+
+    for (const row of rows) {
+      const normalizedStatus = normalizeWorkspaceStatus(row.status);
+      const base = {
+        sourceId: String(row.id),
+        platform: 'social',
+        content: String(row.caption || ''),
+        status: normalizedStatus || 'scheduled',
+        scheduledFor: row.scheduled_for || null,
+        postType: row.threads_content_type || 'text',
+        platforms: Array.isArray(row.platforms) ? row.platforms : [],
+        errorMessage: row.error_message || null,
+        createdAt: row.created_at || null,
+        updatedAt: row.updated_at || null,
+        postedAt: row.posted_at || null,
+        teamId: row.team_id ? String(row.team_id) : platformTeamId,
+      };
+
+      if (queueStatuses.has(normalizedStatus)) {
+        queue.push({
+          ...base,
+          id: `soq-${row.id}`,
+          kind: 'queue',
+        });
+        continue;
+      }
+
+      calendar.push({
+        ...base,
+        id: `soc-${row.id}`,
+        kind: 'calendar',
+      });
+    }
+
+    return res.json({
+      success: true,
+      platform: 'social',
+      queue,
+      calendar,
+      summary: {
+        queueCount: queue.length,
+        calendarCount: calendar.length,
+      },
+    });
+  } catch (error) {
+    logger.error('[internal/threads/workspace/snapshot] Failed to build social workspace snapshot', {
+      userId: platformUserId,
+      teamId: platformTeamId,
+      error: error?.message || String(error),
+    });
+    return res.status(500).json({
+      error: 'Failed to fetch social workspace snapshot',
+      code: 'SOCIAL_WORKSPACE_SNAPSHOT_FAILED',
     });
   }
 });

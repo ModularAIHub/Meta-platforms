@@ -3,7 +3,9 @@ import { Instagram, Youtube, AtSign, Link2, Unlink, ShieldAlert, Twitter, Linked
 import toast from 'react-hot-toast';
 import { accountsApi, oauthApi } from '../utils/api';
 import { useAccounts } from '../contexts/AccountContext';
+import { useAuth } from '../contexts/AuthContext';
 import {
+  getSocialPlatformUnavailableMessage,
   IS_THREADS_ONLY_MODE,
   THREADS_INVITE_MODE_NOTICE,
   isSocialPlatformEnabled,
@@ -21,6 +23,7 @@ const PlatformIcon = ({ platform }) => {
 const AUTOREFRESH_PLATFORMS = new Set(['twitter', 'linkedin']);
 
 const ConnectedAccountsPage = () => {
+  const { user } = useAuth();
   const { accounts, permissions, loading, refreshAccounts } = useAccounts();
   const [disconnectingId, setDisconnectingId] = useState(null);
   const [connectingByok, setConnectingByok] = useState(false);
@@ -56,12 +59,19 @@ const ConnectedAccountsPage = () => {
   }, [accounts]);
 
   const visibleAccounts = useMemo(() => accounts, [accounts]);
-  const instagramLocked = IS_THREADS_ONLY_MODE && !isSocialPlatformEnabled('instagram');
-  const youtubeLocked = IS_THREADS_ONLY_MODE && !isSocialPlatformEnabled('youtube');
+  const platformAccessContext = useMemo(
+    () => ({
+      email: user?.email || '',
+      id: user?.id || '',
+    }),
+    [user?.email, user?.id]
+  );
+  const instagramLocked = IS_THREADS_ONLY_MODE && !isSocialPlatformEnabled('instagram', platformAccessContext);
+  const youtubeLocked = IS_THREADS_ONLY_MODE && !isSocialPlatformEnabled('youtube', platformAccessContext);
 
   const connectPlatform = (platform) => {
-    if (!isSocialPlatformEnabled(platform)) {
-      toast.error('This platform is not available in production yet.');
+    if (!isSocialPlatformEnabled(platform, platformAccessContext)) {
+      toast.error(getSocialPlatformUnavailableMessage(platform));
       return;
     }
 
@@ -159,9 +169,7 @@ const ConnectedAccountsPage = () => {
       {IS_THREADS_ONLY_MODE && (
         <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-blue-800">
           <p className="text-sm font-medium">Threads-only mode</p>
-          <p className="text-sm mt-1">
-            {THREADS_INVITE_MODE_NOTICE} Instagram and YouTube are visible but locked in production for now.
-          </p>
+          <p className="text-sm mt-1">{THREADS_INVITE_MODE_NOTICE}</p>
         </div>
       )}
 
@@ -201,7 +209,7 @@ const ConnectedAccountsPage = () => {
 
           {instagramLocked ? (
             <p className="text-xs text-gray-600 mt-4">
-              Locked in production. This platform will be enabled in a later rollout.
+              {getSocialPlatformUnavailableMessage('instagram')}
             </p>
           ) : (
             <div className="mt-4 border-t border-gray-200 pt-4 space-y-2">
@@ -303,7 +311,7 @@ const ConnectedAccountsPage = () => {
           </button>
           {youtubeLocked && (
             <p className="text-xs text-gray-600 mt-4">
-              Locked in production. This platform will be enabled in a later rollout.
+              {getSocialPlatformUnavailableMessage('youtube')}
             </p>
           )}
         </div>

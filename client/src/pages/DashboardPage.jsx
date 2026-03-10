@@ -3,8 +3,10 @@ import { BarChart3, Heart, Users, Video, Instagram, Youtube, AtSign, Link2, Shie
 import toast from 'react-hot-toast';
 import { dashboardApi, oauthApi } from '../utils/api';
 import { useAccounts } from '../contexts/AccountContext';
+import { useAuth } from '../contexts/AuthContext';
 import LoadingSpinner from '../components/LoadingSpinner';
 import {
+  getSocialPlatformUnavailableMessage,
   IS_THREADS_ONLY_MODE,
   THREADS_INVITE_MODE_NOTICE,
   isSocialPlatformEnabled,
@@ -89,6 +91,7 @@ const getCrossPostTargetsForPost = (post) => {
 };
 
 const DashboardPage = () => {
+  const { user } = useAuth();
   const {
     accounts,
     permissions,
@@ -100,12 +103,19 @@ const DashboardPage = () => {
 
   const canManageConnections = Boolean(permissions?.canManageConnections);
   const visibleAccounts = useMemo(() => accounts, [accounts]);
-  const instagramLocked = IS_THREADS_ONLY_MODE && !isSocialPlatformEnabled('instagram');
-  const youtubeLocked = IS_THREADS_ONLY_MODE && !isSocialPlatformEnabled('youtube');
+  const platformAccessContext = useMemo(
+    () => ({
+      email: user?.email || '',
+      id: user?.id || '',
+    }),
+    [user?.email, user?.id]
+  );
+  const instagramLocked = IS_THREADS_ONLY_MODE && !isSocialPlatformEnabled('instagram', platformAccessContext);
+  const youtubeLocked = IS_THREADS_ONLY_MODE && !isSocialPlatformEnabled('youtube', platformAccessContext);
 
   const connectPlatform = (platform) => {
-    if (!isSocialPlatformEnabled(platform)) {
-      toast.error('This platform is not available in production yet.');
+    if (!isSocialPlatformEnabled(platform, platformAccessContext)) {
+      toast.error(getSocialPlatformUnavailableMessage(platform));
       return;
     }
 
@@ -192,9 +202,7 @@ const DashboardPage = () => {
       {IS_THREADS_ONLY_MODE && (
         <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-blue-800">
           <p className="text-sm font-medium">Threads-only mode</p>
-          <p className="text-sm mt-1">
-            {THREADS_INVITE_MODE_NOTICE} Instagram and YouTube are visible but locked in production for now.
-          </p>
+          <p className="text-sm mt-1">{THREADS_INVITE_MODE_NOTICE}</p>
         </div>
       )}
 
@@ -296,7 +304,7 @@ const DashboardPage = () => {
 
               {IS_THREADS_ONLY_MODE && (
                 <p className="text-xs text-gray-500">
-                  Instagram and YouTube are visible here but locked in production for now.
+                  {THREADS_INVITE_MODE_NOTICE}
                 </p>
               )}
 

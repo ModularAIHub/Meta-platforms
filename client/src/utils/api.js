@@ -152,7 +152,6 @@ export const accountsApi = {
 };
 
 export const postsApi = {
-  preflight: (payload) => api.post('/api/posts/preflight', payload),
   create: (payload) => api.post('/api/posts', payload),
   recent: (limit = 10) => api.get('/api/posts/recent', { params: { limit } }),
   history: (params = {}) => api.get('/api/posts/history', { params }),

@@ -2,6 +2,10 @@
 import { v4 as uuidv4 } from 'uuid';
 import { query } from '../config/database.js';
 import { createOAuthState, consumeOAuthState } from '../services/oauthStateStore.js';
+import {
+  INSTAGRAM_INVITE_ONLY_ENABLED,
+  isSocialPlatformEnabledForUser,
+} from '../utils/platformAvailability.js';
 
 const isMockOAuthEnabled = () => String(process.env.SOCIAL_MOCK_OAUTH || 'false').toLowerCase() === 'true';
 const THREADS_OAUTH_AUTHORIZE_URL =
@@ -154,6 +158,14 @@ const upsertConnectedAccount = async ({
 
 export const connectInstagram = async (req, res) => {
   const returnUrl = ensureReturnUrl(req.query.returnUrl);
+  if (!isSocialPlatformEnabledForUser('instagram', req.user)) {
+    return redirectWithError(
+      res,
+      returnUrl,
+      INSTAGRAM_INVITE_ONLY_ENABLED ? 'instagram_invite_only' : 'instagram_disabled_in_mode'
+    );
+  }
+
   const teamId = req.teamContext?.teamId || null;
 
   const state = await createOAuthState({

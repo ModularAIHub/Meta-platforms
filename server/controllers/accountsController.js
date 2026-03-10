@@ -1,6 +1,7 @@
 ﻿import axios from 'axios';
 import { v4 as uuidv4 } from 'uuid';
 import { query } from '../config/database.js';
+import { getPlatformModeErrorPayload } from '../utils/platformAvailability.js';
 
 const INSTAGRAM_API_VERSION = process.env.INSTAGRAM_API_VERSION || 'v23.0';
 
@@ -333,6 +334,14 @@ export const disconnectAccount = async (req, res) => {
 
 export const connectInstagramByok = async (req, res) => {
   try {
+    const platformModeError = getPlatformModeErrorPayload({
+      platforms: ['instagram'],
+      user: req.user,
+    });
+    if (platformModeError) {
+      return res.status(403).json(platformModeError);
+    }
+
     const { userId, teamId } = getScope(req);
     const accessTokenRaw = String(req.body?.access_token || '').trim();
     const instagramAccountIdRaw = String(req.body?.instagram_account_id || '').trim();
