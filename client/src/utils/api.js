@@ -6,6 +6,7 @@ const AUTH_REDIRECT_STORAGE_KEY = 'meta_genie_auth_redirect_time';
 const REDIRECT_COOLDOWN_MS = 2000;
 const NON_REFRESHABLE_AUTH_PATHS = ['/auth/refresh', '/auth/logout', '/auth/callback'];
 const TEAM_CONTEXT_STORAGE_KEY = 'activeTeamContext';
+const AGENCY_WORKSPACE_STORAGE_KEY = 'suitegenie:agency-workspace-context';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -49,6 +50,33 @@ const parseStoredJSON = (key) => {
   }
 };
 
+const readAgencyWorkspaceContext = () => {
+  if (typeof window === 'undefined') return null;
+
+  try {
+    const params = new URLSearchParams(window.location.search || '');
+    const token = String(params.get('agency_token') || '').trim();
+    const workspaceId = String(params.get('workspace_id') || '').trim();
+    const tool = String(params.get('tool') || '').trim();
+    const target = String(params.get('target') || '').trim();
+
+    if (token && workspaceId) {
+      const context = { token, workspaceId, tool: tool || null, target: target || null };
+      window.sessionStorage?.setItem(AGENCY_WORKSPACE_STORAGE_KEY, JSON.stringify(context));
+      return context;
+    }
+  } catch {
+    // Ignore URL parsing failures and fall back to stored context.
+  }
+
+  try {
+    const stored = window.sessionStorage?.getItem(AGENCY_WORKSPACE_STORAGE_KEY);
+    return stored ? JSON.parse(stored) : null;
+  } catch {
+    return null;
+  }
+};
+
 const redirectToPlatformLogin = () => {
   if (typeof window === 'undefined') return;
 
@@ -81,10 +109,25 @@ const processQueue = (error) => {
 api.interceptors.request.use((config) => {
   const teamContext = parseStoredJSON(TEAM_CONTEXT_STORAGE_KEY);
   const teamId = teamContext?.team_id || teamContext?.teamId || null;
+  const agencyWorkspace = readAgencyWorkspaceContext();
 
   delete config.headers['x-team-id'];
+  delete config.headers['x-agency-token'];
+  delete config.headers['x-agency-workspace-id'];
+  delete config.headers['x-agency-tool'];
+  delete config.headers['x-agency-target'];
   if (teamId) {
     config.headers['x-team-id'] = teamId;
+  }
+  if (agencyWorkspace?.token && agencyWorkspace?.workspaceId) {
+    config.headers['x-agency-token'] = agencyWorkspace.token;
+    config.headers['x-agency-workspace-id'] = agencyWorkspace.workspaceId;
+    if (agencyWorkspace.tool) {
+      config.headers['x-agency-tool'] = agencyWorkspace.tool;
+    }
+    if (agencyWorkspace.target) {
+      config.headers['x-agency-target'] = agencyWorkspace.target;
+    }
   }
 
   return config;

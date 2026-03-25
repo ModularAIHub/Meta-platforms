@@ -75,7 +75,11 @@ router.get('/callback', async (req, res) => {
 router.get('/validate', requirePlatformLogin, (req, res) => {
   return res.json({
     success: true,
-    user: req.user,
+    user: {
+      ...(req.user || {}),
+      agencyWorkspace: req.agencyWorkspace || null,
+    },
+    agencyWorkspace: req.agencyWorkspace || null,
   });
 });
 

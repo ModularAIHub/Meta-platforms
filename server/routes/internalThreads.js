@@ -530,6 +530,9 @@ router.get('/targets', ensureInternalRequest, async (req, res) => {
 router.post('/workspace/snapshot', ensureInternalRequest, async (req, res) => {
   const platformUserId = resolvePlatformUserId(req);
   const platformTeamId = resolvePlatformTeamId(req);
+  const targetAccountIds = Array.isArray(req.body?.targetAccountIds)
+    ? [...new Set(req.body.targetAccountIds.map((item) => String(item || '').trim()).filter(Boolean))]
+    : [];
   const limit = Math.max(1, Math.min(100, Number(req.body?.limit || 50) || 50));
 
   if (!platformUserId) {
@@ -563,6 +566,7 @@ router.post('/workspace/snapshot', ensureInternalRequest, async (req, res) => {
            sp.platforms,
            sp.threads_content_type,
            sp.scheduled_for,
+           sp.metadata,
            sp.error_message,
            sp.team_id,
            sp.created_at,
@@ -574,7 +578,14 @@ router.post('/workspace/snapshot', ensureInternalRequest, async (req, res) => {
          LIMIT $${params.length}`,
         params
       );
-      rows = result.rows || [];
+      rows = (result.rows || []).filter((row) => {
+        if (targetAccountIds.length === 0) return true;
+        const metadata = row?.metadata && typeof row.metadata === 'object' ? row.metadata : {};
+        const map = metadata?.target_account_ids && typeof metadata.target_account_ids === 'object'
+          ? metadata.target_account_ids
+          : {};
+        return Object.values(map).some((value) => targetAccountIds.includes(String(value || '').trim()));
+      });
     } catch (error) {
       if (!isMissingRelation(error)) throw error;
     }

@@ -276,7 +276,20 @@ export const listAccounts = async (req, res) => {
           [userId]
         );
 
-    return res.json({ success: true, accounts: result.rows });
+    const allowedAccountIds = Array.isArray(req.agencyWorkspace?.allowedAccountIds)
+      ? req.agencyWorkspace.allowedAccountIds.map((value) => String(value || '').trim()).filter(Boolean)
+      : [];
+    const accounts = allowedAccountIds.length === 0
+      ? result.rows
+      : result.rows.filter((row) => {
+          const candidates = [
+            String(row.id || '').trim(),
+            String(row.account_id || '').trim(),
+          ].filter(Boolean);
+          return candidates.some((candidate) => allowedAccountIds.includes(candidate));
+        });
+
+    return res.json({ success: true, accounts });
   } catch (error) {
     return res.status(500).json({ error: 'Failed to fetch connected accounts', details: error.message });
   }

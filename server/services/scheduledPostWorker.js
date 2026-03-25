@@ -404,6 +404,42 @@ const splitTextByLimit = (text, limit = THREADS_TEXT_MAX_CHARS) => {
 };
 
 const getConnectedAccountByPlatform = async (post, platform) => {
+  const metadata = parseJsonObject(post?.metadata, {});
+  const targetAccountIds =
+    metadata?.target_account_ids && typeof metadata.target_account_ids === 'object'
+      ? metadata.target_account_ids
+      : {};
+  const explicitTargetAccountId =
+    targetAccountIds?.[platform] !== undefined && targetAccountIds?.[platform] !== null
+      ? String(targetAccountIds[platform]).trim() || null
+      : null;
+
+  if (explicitTargetAccountId) {
+    const params = [explicitTargetAccountId, platform];
+    const filters = [`id::text = $1::text`, `platform = $2`, `is_active = true`];
+
+    if (post.team_id) {
+      params.push(post.team_id);
+      filters.push(`team_id::text = $${params.length}::text`);
+    } else {
+      params.push(post.user_id);
+      filters.push(`user_id = $${params.length}`);
+      filters.push(`team_id IS NULL`);
+    }
+
+    const explicitResult = await query(
+      `SELECT id, account_id, access_token, refresh_token, token_expires_at
+       FROM social_connected_accounts
+       WHERE ${filters.join(' AND ')}
+       LIMIT 1`,
+      params
+    );
+
+    if (explicitResult.rows[0]) {
+      return explicitResult.rows[0];
+    }
+  }
+
   if (post.team_id) {
     const result = await query(
       `SELECT id, account_id, access_token, refresh_token, token_expires_at

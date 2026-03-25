@@ -22,6 +22,9 @@ import oauthRoutes from './routes/oauth.js';
 import threadsRoutes from './routes/threads.js';
 import internalThreadsRoutes from './routes/internalThreads.js';
 import internalInstagramRoutes from './routes/internalInstagram.js';
+import internalAiRoutes from './routes/internalAi.js';
+import internalMediaRoutes from './routes/internalMedia.js';
+import internalPostsRoutes from './routes/internalPosts.js';
 import accountsRoutes from './routes/accounts.js';
 import postsRoutes from './routes/posts.js';
 import dashboardRoutes from './routes/dashboard.js';
@@ -34,6 +37,7 @@ import crossPostStatusRoutes from './routes/crossPostStatus.js';
 import cleanupRoutes from './routes/cleanup.js';
 
 import { requirePlatformLogin } from './middleware/requirePlatformLogin.js';
+import { applyAgencyWorkspaceContext } from './middleware/agencyWorkspace.js';
 import { resolveTeamContextMiddleware } from './middleware/resolveTeamContext.js';
 import { ensureSchema } from './config/schema.js';
 import { logger } from './utils/logger.js';
@@ -131,6 +135,14 @@ app.use(
       'X-Team-Id',
       'x-team-id',
       'X-Requested-With',
+      'X-Agency-Token',
+      'x-agency-token',
+      'X-Agency-Workspace-Id',
+      'x-agency-workspace-id',
+      'X-Agency-Tool',
+      'x-agency-tool',
+      'X-Agency-Target',
+      'x-agency-target',
     ],
   })
 );
@@ -139,6 +151,7 @@ app.set('trust proxy', 1);
 app.use(cookieParser());
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+app.use(applyAgencyWorkspaceContext);
 
 const setMetaDatabaseReady = () => {
   metaRuntimeState.database.ok = true;
@@ -254,6 +267,9 @@ app.use('/api/oauth', oauthRoutes);
 app.use('/api/threads', threadsRoutes);
 app.use('/api/internal/threads', internalThreadsRoutes);
 app.use('/api/internal/instagram', internalInstagramRoutes);
+app.use('/api/internal/ai', internalAiRoutes);
+app.use('/api/internal/media', internalMediaRoutes);
+app.use('/api/internal/posts', internalPostsRoutes);
 app.use('/api/cleanup', cleanupRoutes);
 
 // Vercel Cron trigger for the Meta Genie post scheduler.

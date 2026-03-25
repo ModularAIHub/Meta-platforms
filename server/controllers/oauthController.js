@@ -200,6 +200,8 @@ export const connectInstagram = async (req, res) => {
 
 export const instagramCallback = async (req, res) => {
   const { state, code, error, mock } = req.query;
+  const scopesRaw = process.env.INSTAGRAM_SCOPES || 'instagram_business_basic,instagram_business_content_publish,pages_show_list,business_management';
+  const grantedScopes = scopesRaw.split(',').map((scope) => scope.trim()).filter(Boolean);
 
   const statePayload = state ? await consumeOAuthState(state) : null;
   if (!statePayload) {
@@ -226,7 +228,7 @@ export const instagramCallback = async (req, res) => {
         tokenExpiresAt: null,
         profileImageUrl: null,
         followersCount: 1200,
-        metadata: { mock: true },
+        metadata: { mock: true, oauthProvider: 'meta', grantedScopes },
       });
 
       return redirectWithSuccess(res, returnUrl, 'instagram');
@@ -285,6 +287,8 @@ export const instagramCallback = async (req, res) => {
         metadata = {
           pageId: pageWithInstagram.id,
           pageName: pageWithInstagram.name,
+          oauthProvider: 'meta',
+          grantedScopes,
         };
       }
     } catch {
@@ -305,6 +309,8 @@ export const instagramCallback = async (req, res) => {
       accountDisplayName = profileResponse.data?.name || 'Instagram Account';
       metadata = {
         profileType: 'facebook_user_fallback',
+        oauthProvider: 'meta',
+        grantedScopes,
       };
     }
 
@@ -380,6 +386,8 @@ export const connectThreads = async (req, res) => {
 
 export const threadsCallback = async (req, res) => {
   const { state, code, error, mock } = req.query;
+  const scopesRaw = process.env.THREADS_SCOPES || 'threads_basic,threads_content_publish';
+  const grantedScopes = scopesRaw.split(',').map((scope) => scope.trim()).filter(Boolean);
 
   console.log('[THREADS CALLBACK] Started', { state: state?.substring(0, 8), code: code?.substring(0, 8), error, mock });
 
@@ -410,7 +418,7 @@ export const threadsCallback = async (req, res) => {
         tokenExpiresAt: null,
         profileImageUrl: null,
         followersCount: 0,
-        metadata: { mock: true },
+        metadata: { mock: true, oauthProvider: 'meta', grantedScopes },
       });
 
       console.log('[THREADS CALLBACK] Mock connection successful');
@@ -542,6 +550,8 @@ export const threadsCallback = async (req, res) => {
       metadata: {
         profileFetched: Boolean(profile?.id),
         longLivedApplied,
+        oauthProvider: 'meta',
+        grantedScopes,
       },
     });
 
