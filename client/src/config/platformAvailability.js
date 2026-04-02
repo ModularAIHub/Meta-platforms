@@ -43,6 +43,12 @@ export const IS_THREADS_ONLY_MODE = SOCIAL_PLATFORM_MODE === 'threads_only';
 export const INSTAGRAM_INVITE_ONLY_ENABLED = IS_THREADS_ONLY_MODE
   ? parseBooleanEnv(import.meta.env.VITE_INSTAGRAM_INVITE_ONLY_ENABLED, true)
   : false;
+export const INSTAGRAM_ENABLED = !IS_THREADS_ONLY_MODE
+  ? true
+  : parseBooleanEnv(import.meta.env.VITE_INSTAGRAM_ENABLED, false);
+export const YOUTUBE_ENABLED = !IS_THREADS_ONLY_MODE
+  ? true
+  : parseBooleanEnv(import.meta.env.VITE_YOUTUBE_ENABLED, false);
 
 const INSTAGRAM_INVITE_TESTER_EMAILS = new Set(
   parseCsvEnvList(import.meta.env.VITE_INSTAGRAM_INVITE_TESTER_EMAILS, { lowerCase: true })
@@ -63,33 +69,53 @@ export const isSocialPlatformEnabled = (platform, context = null) => {
   const normalizedPlatform = normalizeLower(platform);
   if (!normalizedPlatform) return false;
 
-  if (!IS_THREADS_ONLY_MODE) {
-    return ['instagram', 'threads', 'youtube'].includes(normalizedPlatform);
-  }
-
   if (normalizedPlatform === 'threads') {
     return true;
   }
 
   if (normalizedPlatform === 'instagram') {
+    if (INSTAGRAM_ENABLED) {
+      return true;
+    }
     return INSTAGRAM_INVITE_ONLY_ENABLED && isInstagramInviteTester(context);
   }
 
-  return false;
+  if (normalizedPlatform === 'youtube') {
+    return YOUTUBE_ENABLED;
+  }
+
+  return !IS_THREADS_ONLY_MODE && ['instagram', 'threads', 'youtube'].includes(normalizedPlatform);
 };
 
 export const getSocialPlatformUnavailableMessage = (platform) => {
   const normalizedPlatform = normalizeLower(platform);
-  if (normalizedPlatform === 'instagram' && IS_THREADS_ONLY_MODE && INSTAGRAM_INVITE_ONLY_ENABLED) {
+  if (normalizedPlatform === 'instagram' && IS_THREADS_ONLY_MODE && !INSTAGRAM_ENABLED && INSTAGRAM_INVITE_ONLY_ENABLED) {
     return 'Instagram is in invite-only testing for approved accounts right now.';
+  }
+  if (normalizedPlatform === 'youtube' && !YOUTUBE_ENABLED) {
+    return 'YouTube is disabled for this deployment until the rollout envs are enabled.';
   }
   return 'This platform is not available in production yet.';
 };
 
-export const ENABLED_SOCIAL_PLATFORMS = IS_THREADS_ONLY_MODE
-  ? (INSTAGRAM_INVITE_ONLY_ENABLED ? ['threads', 'instagram'] : ['threads'])
-  : ['instagram', 'threads', 'youtube'];
+export const ENABLED_SOCIAL_PLATFORMS = [
+  'threads',
+  ...(INSTAGRAM_ENABLED || INSTAGRAM_INVITE_ONLY_ENABLED ? ['instagram'] : []),
+  ...(YOUTUBE_ENABLED ? ['youtube'] : []),
+];
 
-export const THREADS_INVITE_MODE_NOTICE = INSTAGRAM_INVITE_ONLY_ENABLED
-  ? 'Threads is live. Instagram is invite-only for approved testers, and YouTube remains disabled in production.'
-  : 'Threads is live. Instagram and YouTube remain disabled in production until their rollout is enabled.';
+const rolloutNoticeParts = ['Threads is live.'];
+if (INSTAGRAM_ENABLED) {
+  rolloutNoticeParts.push('Instagram is enabled.');
+} else if (INSTAGRAM_INVITE_ONLY_ENABLED) {
+  rolloutNoticeParts.push('Instagram is invite-only for approved testers.');
+} else {
+  rolloutNoticeParts.push('Instagram remains disabled until rollout is enabled.');
+}
+if (YOUTUBE_ENABLED) {
+  rolloutNoticeParts.push('YouTube is enabled.');
+} else {
+  rolloutNoticeParts.push('YouTube remains disabled until rollout envs are enabled.');
+}
+
+export const THREADS_INVITE_MODE_NOTICE = rolloutNoticeParts.join(' ');

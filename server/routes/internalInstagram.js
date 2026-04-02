@@ -1,6 +1,5 @@
 import express from 'express';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import { query } from '../config/database.js';
 import { publishInstagramPost } from '../services/instagramService.js';
@@ -8,9 +7,14 @@ import { uploadUrlToCloudinary, uploadBufferToCloudinary, isCloudinaryUrl } from
 import { logger } from '../utils/logger.js';
 
 const router = express.Router();
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const INTERNAL_CROSSPOST_MAX_MEDIA_ITEMS = 4;
+
+const INTERNAL_CROSSPOST_MAX_MEDIA_ITEMS = 10;
 const INTERNAL_CROSSPOST_MAX_MEDIA_BYTES = 8 * 1024 * 1024;
+const INSTAGRAM_CAPTION_MAX_CHARS = Math.max(
+  2200,
+  Number.parseInt(process.env.INSTAGRAM_CAPTION_MAX_CHARS || '2200', 10)
+);
+const UPLOAD_FILENAME_RE = /^\d{10,13}-[0-9a-fA-F-]{36}\.(jpg|jpeg|png|gif|webp|mp4|mov|m4v|webm|avi|mpeg|mpg)$/i;
 
 const ensureInternalRequest = (req, res, next) => {
   const configuredKey = String(process.env.INTERNAL_API_KEY || '').trim();
@@ -31,23 +35,73 @@ const ensureInternalRequest = (req, res, next) => {
   }
 
   req.isInternal = true;
-  next();
+  return next();
 };
 
 const resolvePlatformUserId = (req) => String(req.headers['x-platform-user-id'] || '').trim();
 const resolvePlatformTeamId = (req) => String(req.headers['x-platform-team-id'] || '').trim() || null;
+const trimText = (value, maxLength = 5000) => String(value || '').trim().slice(0, maxLength);
 
-const getPersonalThreadsAccount = async (platformUserId) => {
+const isTokenExpired = (tokenExpiresAt) => {
+  if (!tokenExpiresAt) return false;
+  const expiresMs = new Date(tokenExpiresAt).getTime();
+  return Number.isFinite(expiresMs) && expiresMs <= Date.now();
+};
+
+const normalizeCrossPostMediaInputs = (value) => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter(Boolean)
+    .slice(0, INTERNAL_CROSSPOST_MAX_MEDIA_ITEMS);
+};
+
+const isHttpUrl = (value) => /^https?:\/\//i.test(String(value || '').trim());
+
+const parseDataUrl = (value) => {
+  const raw = String(value || '').trim();
+  const match = raw.match(/^data:([^;,]+);base64,(.+)$/i);
+  if (!match) return null;
+
+  const mimetype = String(match[1] || '').toLowerCase();
+  if (!mimetype.startsWith('image/') && !mimetype.startsWith('video/')) {
+    return null;
+  }
+
+  const buffer = Buffer.from(match[2], 'base64');
+  if (buffer.length > INTERNAL_CROSSPOST_MAX_MEDIA_BYTES) {
+    throw new Error(`Cross-post media exceeds ${INTERNAL_CROSSPOST_MAX_MEDIA_BYTES} bytes`);
+  }
+
+  return { mimetype, buffer };
+};
+
+const persistDataUrlMediaForInstagram = async (value) => {
+  const parsed = parseDataUrl(value);
+  if (!parsed) return null;
+
+  const uploaded = await uploadBufferToCloudinary(parsed.buffer, parsed.mimetype, 'instagram');
+  const url = uploaded.secure_url || uploaded.url;
+  if (!url) throw new Error('Cloudinary upload returned no URL');
+
+  return {
+    url,
+    mimetype: parsed.mimetype,
+  };
+};
+
+const getPersonalInstagramAccount = async (platformUserId) => {
   if (!platformUserId) return null;
 
   const result = await query(
-    `SELECT id, user_id, account_id, account_username, access_token, token_expires_at, metadata
+    `SELECT id, user_id, team_id, account_id, account_username, account_display_name, profile_image_url,
+            access_token, token_expires_at, metadata
      FROM social_connected_accounts
      WHERE user_id = $1
        AND team_id IS NULL
-       AND platform = 'threads'
+       AND platform = 'instagram'
        AND is_active = true
-     ORDER BY updated_at DESC
+     ORDER BY updated_at DESC NULLS LAST, id DESC
      LIMIT 1`,
     [platformUserId]
   );
@@ -59,11 +113,12 @@ const getPersonalInstagramAccountById = async (platformUserId, targetAccountId) 
   if (!platformUserId || !targetAccountId) return null;
 
   const result = await query(
-    `SELECT id, user_id, team_id, account_id, account_username, account_display_name, profile_image_url, access_token, token_expires_at, metadata
+    `SELECT id, user_id, team_id, account_id, account_username, account_display_name, profile_image_url,
+            access_token, token_expires_at, metadata
      FROM social_connected_accounts
      WHERE user_id = $1
        AND team_id IS NULL
-       AND platform = 'threads'
+       AND platform = 'instagram'
        AND is_active = true
        AND id::text = $2::text
      LIMIT 1`,
@@ -107,7 +162,7 @@ const getTeamInstagramAccountForMemberById = async (platformUserId, platformTeam
       AND tm.user_id = $1
       AND tm.status = 'active'
      WHERE sca.team_id::text = $2::text
-       AND sca.platform = 'threads'
+       AND sca.platform = 'instagram'
        AND sca.is_active = true
        AND sca.id::text = $3::text
      LIMIT 1`,
@@ -117,187 +172,11 @@ const getTeamInstagramAccountForMemberById = async (platformUserId, platformTeam
   return result.rows[0] || null;
 };
 
-const isTokenExpired = (tokenExpiresAt) => {
-  if (!tokenExpiresAt) return false;
-  const expiresMs = new Date(tokenExpiresAt).getTime();
-  return Number.isFinite(expiresMs) && expiresMs <= Date.now();
-};
-
-const trimText = (value, maxLength = 5000) => String(value || '').trim().slice(0, maxLength);
-
-const normalizeCrossPostMediaInputs = (value) => {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((item) => (typeof item === 'string' ? item.trim() : ''))
-    .filter(Boolean)
-    .slice(0, INTERNAL_CROSSPOST_MAX_MEDIA_ITEMS);
-};
-
-const isHttpUrl = (value) => /^https?:\/\//i.test(String(value || '').trim());
-
-const parseDataUrl = (value) => {
-  const raw = String(value || '').trim();
-  const match = raw.match(/^data:([^;,]+);base64,(.+)$/i);
-  if (!match) return null;
-
-  const mimetype = String(match[1] || '').toLowerCase();
-  if (!mimetype.startsWith('image/') && !mimetype.startsWith('video/')) {
-    return null;
-  }
-
-  const buffer = Buffer.from(match[2], 'base64');
-  if (buffer.length > INTERNAL_CROSSPOST_MAX_MEDIA_BYTES) {
-    throw new Error(`Cross-post media exceeds ${INTERNAL_CROSSPOST_MAX_MEDIA_BYTES} bytes`);
-  }
-
-  const extMap = {
-    'image/jpeg': 'jpg',
-    'image/jpg': 'jpg',
-    'image/png': 'png',
-    'image/gif': 'gif',
-    'image/webp': 'webp',
-    'video/mp4': 'mp4',
-    'video/quicktime': 'mov',
-    'video/webm': 'webm',
-  };
-
-  return {
-    mimetype,
-    buffer,
-    extension: extMap[mimetype] || 'bin',
-  };
-};
-const persistDataUrlMediaForInstagram = async (value) => {
-  const parsed = parseDataUrl(value);
-  if (!parsed) return null;
-
-  const uploaded = await uploadBufferToCloudinary(parsed.buffer, parsed.mimetype, 'instagram');
-  const url = uploaded.secure_url || uploaded.url;
-  if (!url) throw new Error('Cloudinary upload returned no URL');
-
-  return {
-    url,
-    mimetype: parsed.mimetype,
-  };
-};
-
-const prepareInstagramCrossPostSingleMedia = async ({ mediaInputs = [] }) => {
-  const normalized = normalizeCrossPostMediaInputs(mediaInputs);
-  if (!normalized.length) {
-    return {
-      mediaUrls: [],
-      contentType: 'text',
-      mediaStatus: 'none',
-      mediaCount: 0,
-    };
-  }
-
-  const first = normalized[0];
-  try {
-    let urlToUse = first;
-    // If not already a Cloudinary URL, upload it
-    if (isHttpUrl(first) && !isCloudinaryUrl(first)) {
-      const uploaded = await uploadUrlToCloudinary(first, 'instagram');
-      urlToUse = uploaded.secure_url || uploaded.url;
-    }
-    if (isHttpUrl(urlToUse)) {
-      const lower = urlToUse.toLowerCase();
-      const isVideo = /\.(mp4|mov|m4v|webm|avi|mpeg|mpg)(\?|$)/i.test(lower);
-      return {
-        mediaUrls: [urlToUse],
-        contentType: isVideo ? 'video' : 'image',
-        mediaStatus: normalized.length > 1 ? 'posted_partial' : 'posted',
-        mediaCount: 1,
-      };
-    }
-
-    if (first.startsWith('/uploads/')) {
-      // Validate uploaded filename matches expected pattern: timestamp-uuid.ext
-      const filename = path.basename(first || '');
-      const allowedExt = '(jpg|jpeg|png|gif|webp|mp4|mov|m4v|webm|avi|mpeg|mpg)';
-      const uploadFilenameRe = new RegExp(`^\d{10,13}-[0-9a-fA-F-]{36}\.${allowedExt}$`, 'i');
-      if (!uploadFilenameRe.test(filename)) {
-        logger.warn('[internal/threads/cross-post] Ignoring suspicious uploads path', { first, filename });
-        return { mediaUrls: [], contentType: 'text', mediaStatus: 'text_only_unsupported', mediaCount: 0 };
-      }
-
-      const lower = first.toLowerCase();
-      const isVideo = /\.(mp4|mov|m4v|webm|avi|mpeg|mpg)(\?|$)/i.test(lower);
-      return {
-        mediaUrls: [first],
-        contentType: isVideo ? 'video' : 'image',
-        mediaStatus: normalized.length > 1 ? 'posted_partial' : 'posted',
-        mediaCount: 1,
-      };
-    }
-
-    if (first.startsWith('data:')) {
-      const persisted = await persistDataUrlMediaForThreads(first);
-      if (!persisted) {
-        return { mediaUrls: [], contentType: 'text', mediaStatus: 'text_only_unsupported', mediaCount: 0 };
-      }
-      const isVideo = String(persisted.mimetype || '').startsWith('video/');
-      return {
-        mediaUrls: [persisted.url],
-        contentType: isVideo ? 'video' : 'image',
-        mediaStatus: normalized.length > 1 ? 'posted_partial' : 'posted',
-        mediaCount: 1,
-      };
-    }
-  } catch (error) {
-    logger.warn('[internal/threads/cross-post] Failed to prepare media, falling back to text-only', {
-      error: error?.message || String(error),
-    });
-    return { mediaUrls: [], contentType: 'text', mediaStatus: 'text_only_upload_failed', mediaCount: 0 };
-  }
-
-  return { mediaUrls: [], contentType: 'text', mediaStatus: 'text_only_unsupported', mediaCount: 0 };
-};
-
 const normalizeThreadParts = (parts = []) =>
   (Array.isArray(parts) ? parts : [])
-    .map((part) => trimText(part, 600))
+    .map((part) => trimText(part, 1200))
     .filter(Boolean)
     .slice(0, 30);
-
-const INSTAGRAM_CAPTION_MAX_CHARS = Math.max(2200, Number.parseInt(process.env.INSTAGRAM_CAPTION_MAX_CHARS || '2200', 10));
-
-const splitTextByLimit = (text, limit = INSTAGRAM_CAPTION_MAX_CHARS) => {
-  const normalized = String(text || '').trim();
-  if (!normalized) return [];
-  if (normalized.length <= limit) return [normalized];
-
-  const parts = [];
-  let remaining = normalized;
-  const softFloor = Math.floor(limit * 0.55);
-
-  while (remaining.length > limit) {
-    const slice = remaining.slice(0, limit + 1);
-    let cut = -1;
-
-    const newlineCut = slice.lastIndexOf('\n');
-    if (newlineCut >= softFloor) cut = newlineCut;
-
-    if (cut < softFloor) {
-      const sentenceCut = Math.max(slice.lastIndexOf('. '), slice.lastIndexOf('! '), slice.lastIndexOf('? '));
-      if (sentenceCut >= softFloor) cut = sentenceCut + 1;
-    }
-
-    if (cut < softFloor) {
-      const spaceCut = slice.lastIndexOf(' ');
-      if (spaceCut >= softFloor) cut = spaceCut;
-    }
-
-    if (cut < softFloor) cut = limit;
-
-    const part = remaining.slice(0, cut).trim();
-    if (part) parts.push(part);
-    remaining = remaining.slice(cut).trim();
-  }
-
-  if (remaining) parts.push(remaining);
-  return parts;
-};
 
 const buildInstagramCrossPostCaption = ({ mode, content, threadParts }) => {
   if (mode === 'thread' && Array.isArray(threadParts) && threadParts.length > 0) {
@@ -306,15 +185,89 @@ const buildInstagramCrossPostCaption = ({ mode, content, threadParts }) => {
   return trimText(content, INSTAGRAM_CAPTION_MAX_CHARS);
 };
 
+const normalizeInstagramContentType = (requestedType, mediaUrls = []) => {
+  const normalizedRequested = String(requestedType || '').trim().toLowerCase();
+  if (normalizedRequested === 'carousel' && mediaUrls.length >= 2) return 'carousel';
+  if (normalizedRequested === 'story') return 'story';
+  if (normalizedRequested === 'reel') return 'reel';
+  if (mediaUrls.length >= 2) return 'carousel';
+  return 'feed';
+};
+
+const resolveInstagramMediaInput = async (value) => {
+  if (isHttpUrl(value)) {
+    if (isCloudinaryUrl(value)) {
+      return value;
+    }
+    const uploaded = await uploadUrlToCloudinary(value, 'instagram');
+    return uploaded.secure_url || uploaded.url || null;
+  }
+
+  if (value.startsWith('/uploads/')) {
+    const filename = path.basename(value || '');
+    if (!UPLOAD_FILENAME_RE.test(filename)) {
+      logger.warn('[internal/instagram/cross-post] Ignoring suspicious uploads path', { value, filename });
+      return null;
+    }
+    return value;
+  }
+
+  if (value.startsWith('data:')) {
+    const persisted = await persistDataUrlMediaForInstagram(value);
+    return persisted?.url || null;
+  }
+
+  return null;
+};
+
+const prepareInstagramCrossPostMedia = async ({ mediaInputs = [], requestedType = 'feed' }) => {
+  const normalized = normalizeCrossPostMediaInputs(mediaInputs);
+  if (!normalized.length) {
+    return {
+      mediaUrls: [],
+      contentType: normalizeInstagramContentType(requestedType, []),
+      mediaStatus: 'none',
+      mediaCount: 0,
+    };
+  }
+
+  try {
+    const resolved = [];
+    for (const item of normalized) {
+      const next = await resolveInstagramMediaInput(item);
+      if (next) resolved.push(next);
+    }
+
+    const mediaUrls = resolved.slice(0, INTERNAL_CROSSPOST_MAX_MEDIA_ITEMS);
+    return {
+      mediaUrls,
+      contentType: normalizeInstagramContentType(requestedType, mediaUrls),
+      mediaStatus: mediaUrls.length === normalized.length ? 'posted' : 'posted_partial',
+      mediaCount: mediaUrls.length,
+    };
+  } catch (error) {
+    logger.warn('[internal/instagram/cross-post] Failed to prepare media', {
+      error: error?.message || String(error),
+    });
+    return {
+      mediaUrls: [],
+      contentType: normalizeInstagramContentType(requestedType, []),
+      mediaStatus: 'upload_failed',
+      mediaCount: 0,
+    };
+  }
+};
+
 const saveInstagramCrossPostHistory = async ({
   platformUserId,
+  platformTeamId = null,
   mode,
   content,
   threadParts = [],
   publishResult,
   mediaDetected = false,
   mediaUrls = [],
-  instagramContentType = 'image',
+  instagramContentType = 'feed',
 }) => {
   const id = uuidv4();
   const caption = buildInstagramCrossPostCaption({
@@ -322,10 +275,7 @@ const saveInstagramCrossPostHistory = async ({
     content,
     threadParts,
   });
-  const threadsPostId = String(publishResult?.publishId || publishResult?.creationId || '').trim() || null;
-  const threadIds = Array.isArray(publishResult?.threadPostIds)
-    ? publishResult.threadPostIds.map((item) => String(item || '').trim()).filter(Boolean)
-    : [];
+  const instagramPostId = String(publishResult?.publishId || publishResult?.creationId || '').trim() || null;
 
   await query(
     `INSERT INTO social_posts (
@@ -336,33 +286,32 @@ const saveInstagramCrossPostHistory = async ({
        media_urls,
        platforms,
        cross_post,
-       threads_content_type,
+       instagram_content_type,
        status,
        posted_at,
-       threads_post_id,
-       threads_sequence,
+       instagram_post_id,
        created_at,
        updated_at
      ) VALUES (
-       $1, $2, NULL, $3, $4::jsonb, $5::jsonb, true, $6, 'posted', NOW(), $7, $8::jsonb, NOW(), NOW()
+       $1, $2, $3, $4, $5::jsonb, $6::jsonb, true, $7, 'posted', NOW(), $8, NOW(), NOW()
      )`,
     [
       id,
       platformUserId,
-      caption || (mode === 'thread' ? '[Threads thread]' : '[Threads post]'),
+      platformTeamId,
+      caption || '[Instagram post]',
       JSON.stringify(Array.isArray(mediaUrls) ? mediaUrls : []),
-      JSON.stringify(['threads']),
-      mode === 'thread' ? 'thread' : threadsContentType,
-      threadsPostId,
-      JSON.stringify(threadIds),
+      JSON.stringify(['instagram']),
+      instagramContentType,
+      instagramPostId,
     ]
   );
 
   return {
     historyId: id,
-    threadsPostId,
-    threadPostCount: threadIds.length,
+    instagramPostId,
     mediaDetected: Boolean(mediaDetected),
+    mediaCount: Array.isArray(mediaUrls) ? mediaUrls.length : 0,
   };
 };
 
@@ -377,7 +326,12 @@ const mapInstagramServiceError = (error) => {
   if (code.includes('INSTAGRAM_ACCOUNT_RESOURCE_NOT_FOUND')) {
     return { status: 404, code: 'INSTAGRAM_NOT_CONNECTED', error: message };
   }
-  if (code.includes('INSTAGRAM_CHAIN_MIN_POSTS') || code.includes('INSTAGRAM_POST_TOO_LONG') || code.includes('INSTAGRAM_TEXT_TOO_LONG')) {
+  if (
+    code.includes('INSTAGRAM_MEDIA_REQUIRED') ||
+    code.includes('INSTAGRAM_REEL_VIDEO_REQUIRED') ||
+    code.includes('INSTAGRAM_MEDIA_PROCESSING_FAILED') ||
+    code.includes('INSTAGRAM_MEDIA_PROCESSING_TIMEOUT')
+  ) {
     return { status: 400, code: code || 'INSTAGRAM_VALIDATION_ERROR', error: message };
   }
   if (status === 401 || status === 403) {
@@ -389,8 +343,24 @@ const mapInstagramServiceError = (error) => {
   return { status: 500, code: code || 'INSTAGRAM_PUBLISH_FAILED', error: message };
 };
 
+const resolveInstagramAccountSelection = async ({ platformUserId, platformTeamId, targetAccountId = null }) => {
+  if (targetAccountId) {
+    if (platformTeamId) {
+      return getTeamInstagramAccountForMemberById(platformUserId, platformTeamId, targetAccountId);
+    }
+    return getPersonalInstagramAccountById(platformUserId, targetAccountId);
+  }
+
+  if (platformTeamId) {
+    return getTeamInstagramAccountForMember(platformUserId, platformTeamId);
+  }
+
+  return getPersonalInstagramAccount(platformUserId);
+};
+
 router.get('/status', ensureInternalRequest, async (req, res) => {
   const platformUserId = resolvePlatformUserId(req);
+  const platformTeamId = resolvePlatformTeamId(req);
 
   if (!platformUserId) {
     return res.status(400).json({
@@ -401,13 +371,16 @@ router.get('/status', ensureInternalRequest, async (req, res) => {
   }
 
   try {
-    const account = await getPersonalThreadsAccount(platformUserId);
+    const account = await resolveInstagramAccountSelection({
+      platformUserId,
+      platformTeamId,
+    });
 
     if (!account) {
       return res.json({
         connected: false,
         reason: 'not_connected',
-        code: 'THREADS_NOT_CONNECTED',
+        code: 'INSTAGRAM_NOT_CONNECTED',
       });
     }
 
@@ -415,7 +388,7 @@ router.get('/status', ensureInternalRequest, async (req, res) => {
       return res.json({
         connected: false,
         reason: 'token_missing',
-        code: 'THREADS_TOKEN_MISSING',
+        code: 'INSTAGRAM_TOKEN_MISSING',
       });
     }
 
@@ -423,7 +396,7 @@ router.get('/status', ensureInternalRequest, async (req, res) => {
       return res.json({
         connected: false,
         reason: 'token_expired',
-        code: 'THREADS_TOKEN_EXPIRED',
+        code: 'INSTAGRAM_TOKEN_EXPIRED',
       });
     }
 
@@ -436,8 +409,9 @@ router.get('/status', ensureInternalRequest, async (req, res) => {
       },
     });
   } catch (error) {
-    logger.error('[internal/threads/status] Failed to resolve status', {
+    logger.error('[internal/instagram/status] Failed to resolve status', {
       userId: platformUserId,
+      teamId: platformTeamId,
       error: error?.message || String(error),
     });
 
@@ -472,7 +446,7 @@ router.get('/targets', ensureInternalRequest, async (req, res) => {
           AND tm.user_id = $1
           AND tm.status = 'active'
          WHERE sca.team_id::text = $2::text
-           AND sca.platform = 'threads'
+           AND sca.platform = 'instagram'
            AND sca.is_active = true
          ORDER BY sca.updated_at DESC NULLS LAST, sca.id DESC`,
         [platformUserId, String(platformTeamId)]
@@ -484,7 +458,7 @@ router.get('/targets', ensureInternalRequest, async (req, res) => {
          FROM social_connected_accounts
          WHERE user_id = $1
            AND team_id IS NULL
-           AND platform = 'threads'
+           AND platform = 'instagram'
            AND is_active = true
          ORDER BY updated_at DESC NULLS LAST, id DESC`,
         [platformUserId]
@@ -495,19 +469,19 @@ router.get('/targets', ensureInternalRequest, async (req, res) => {
     const accounts = rows
       .map((row) => ({
         id: row?.id !== undefined && row?.id !== null ? String(row.id) : null,
-        platform: 'threads',
+        platform: 'instagram',
         accountId: row?.account_id ? String(row.account_id) : null,
         username: row?.account_username ? String(row.account_username) : null,
         displayName:
           String(row?.account_display_name || '').trim() ||
-          (row?.account_username ? `@${String(row.account_username)}` : 'Threads account'),
+          (row?.account_username ? `@${String(row.account_username)}` : 'Instagram account'),
         avatar: row?.profile_image_url || null,
       }))
       .filter((row) => row.id && row.id !== String(excludeAccountId || ''));
 
     return res.json({ success: true, accounts });
   } catch (error) {
-    logger.error('[internal/threads/targets] Failed to list Threads targets', {
+    logger.error('[internal/instagram/targets] Failed to list Instagram targets', {
       userId: platformUserId,
       teamId: platformTeamId,
       error: error?.message || String(error),
@@ -530,6 +504,7 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
     media = [],
     mediaUrls = [],
     targetAccountId = null,
+    instagramContentType = 'feed',
   } = req.body || {};
 
   if (!platformUserId) {
@@ -540,189 +515,120 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
   }
 
   const normalizedMode = String(postMode || 'single').toLowerCase() === 'thread' ? 'thread' : 'single';
-  const normalizedContent = trimText(content, 5000);
+  const normalizedContent = trimText(content, INSTAGRAM_CAPTION_MAX_CHARS);
   const normalizedThreadParts = normalizeThreadParts(threadParts);
   const incomingMedia = normalizeCrossPostMediaInputs(
     Array.isArray(media) && media.length > 0 ? media : mediaUrls
   );
   const effectiveMediaDetected = Boolean(mediaDetected) || incomingMedia.length > 0;
+  const caption = buildInstagramCrossPostCaption({
+    mode: normalizedMode,
+    content: normalizedContent,
+    threadParts: normalizedThreadParts,
+  });
 
   if (normalizedMode === 'thread' && normalizedThreadParts.length < 2) {
     return res.status(400).json({
-      error: 'threadParts must contain at least 2 posts for thread mode',
-      code: 'THREADS_CHAIN_MIN_POSTS',
-    });
-  }
-
-  if (normalizedMode === 'single' && !normalizedContent) {
-    return res.status(400).json({
-      error: 'content is required for single mode',
-      code: 'THREADS_CONTENT_REQUIRED',
+      error: 'threadParts must contain at least 2 parts for thread mode',
+      code: 'INSTAGRAM_THREAD_MIN_PARTS',
     });
   }
 
   try {
-    let account = null;
-    if (targetAccountId) {
-      if (platformTeamId) {
-        account = await getTeamThreadsAccountForMemberById(platformUserId, platformTeamId, targetAccountId);
-      } else {
-        account = await getPersonalThreadsAccountById(platformUserId, targetAccountId);
-      }
-
-      if (!account) {
-        return res.status(404).json({
-          error: 'Target Threads account not found or inaccessible',
-          code: 'THREADS_TARGET_ACCOUNT_NOT_FOUND',
-        });
-      }
-    } else if (platformTeamId) {
-      account = await getTeamThreadsAccountForMember(platformUserId, platformTeamId);
-    } else {
-      account = await getPersonalThreadsAccount(platformUserId);
-    }
+    const account = await resolveInstagramAccountSelection({
+      platformUserId,
+      platformTeamId,
+      targetAccountId,
+    });
 
     if (!account) {
       return res.status(404).json({
-        error: 'Threads account not connected',
-        code: 'THREADS_NOT_CONNECTED',
+        error: 'Instagram account not connected',
+        code: 'INSTAGRAM_NOT_CONNECTED',
       });
     }
 
     if (!String(account.access_token || '').trim() || !String(account.account_id || '').trim()) {
       return res.status(404).json({
-        error: 'Threads account is missing token/account details',
-        code: 'THREADS_TOKEN_MISSING',
+        error: 'Instagram account is missing token/account details',
+        code: 'INSTAGRAM_TOKEN_MISSING',
       });
     }
 
     if (isTokenExpired(account.token_expires_at)) {
       return res.status(401).json({
-        error: 'Threads token expired. Reconnect Threads.',
-        code: 'THREADS_TOKEN_EXPIRED',
+        error: 'Instagram token expired. Reconnect Instagram.',
+        code: 'INSTAGRAM_TOKEN_EXPIRED',
       });
     }
 
-    let publishResult;
-    let mediaStatus = effectiveMediaDetected ? 'text_only_unsupported' : 'none';
-    let mediaCount = 0;
-    let usedMediaUrls = [];
-    let usedThreadsContentType = 'text';
-    let finalMode = normalizedMode;
-    if (normalizedMode === 'thread') {
-      if (incomingMedia.length > 0) {
-        mediaStatus = 'text_only_thread_mode';
-      }
-      publishResult = await publishThreadsThread({
-        accountId: account.account_id,
-        accessToken: account.access_token,
-        posts: normalizedThreadParts,
-      });
-    } else {
-      const preparedMedia = await prepareThreadsCrossPostSingleMedia({ mediaInputs: incomingMedia });
-      usedMediaUrls = preparedMedia.mediaUrls;
-      usedThreadsContentType = preparedMedia.contentType;
-      mediaStatus = preparedMedia.mediaStatus;
-      mediaCount = preparedMedia.mediaCount;
-      // If single post exceeds per-post limit, attempt server-side auto-split into a thread
-      if (String(normalizedContent || '').length > THREADS_TEXT_MAX_CHARS) {
-        // Auto-split not possible with media attached
-        if (incomingMedia.length > 0) {
-          return res.status(400).json({ error: 'Single Instagram post with media exceeds per-post limit and cannot be auto-split', code: 'INSTAGRAM_MEDIA_UNSUPPORTED_AUTO_SPLIT' });
-        }
-
-        if (String(normalizedContent || '').length <= INSTAGRAM_CAPTION_MAX_CHARS) {
-          const parts = splitTextByLimit(normalizedContent, INSTAGRAM_CAPTION_MAX_CHARS).slice(0, 5);
-          if (parts.length >= 2) {
-            finalMode = 'thread';
-            publishResult = await publishThreadsThread({
-              accountId: account.account_id,
-              accessToken: account.access_token,
-              posts: parts,
-            });
-            // mark media values accordingly (no media)
-            usedMediaUrls = [];
-            usedThreadsContentType = 'text';
-            mediaStatus = 'none';
-            mediaCount = 0;
-          } else {
-            // Fallback to attempt single post (will likely fail with text too long)
-            publishResult = await publishThreadsPost({
-              accountId: account.account_id,
-              accessToken: account.access_token,
-              text: normalizedContent,
-              mediaUrls: preparedMedia.mediaUrls,
-              contentType: preparedMedia.contentType,
-              requestHost: req.get('host') || null,
-            });
-          }
-        } else {
-          return res.status(400).json({ error: `Threads text must be ${THREADS_AUTO_SPLIT_MAX_CHARS} characters or fewer`, code: 'THREADS_TEXT_TOO_LONG' });
-        }
-      } else {
-        publishResult = await publishThreadsPost({
-          accountId: account.account_id,
-          accessToken: account.access_token,
-          text: normalizedContent,
-          mediaUrls: preparedMedia.mediaUrls,
-          contentType: preparedMedia.contentType,
-          requestHost: req.get('host') || null,
-        });
-      }
-    }
-
-    logger.info('[internal/threads/cross-post] Posted to Threads', {
-      userId: platformUserId,
-      mode: finalMode,
-      mediaDetected: Boolean(effectiveMediaDetected),
-      mediaStatus,
-      mediaCount,
-      publishId: publishResult?.publishId || null,
-      threadPostCount: Array.isArray(publishResult?.threadPostIds) ? publishResult.threadPostIds.length : 0,
+    const preparedMedia = await prepareInstagramCrossPostMedia({
+      mediaInputs: incomingMedia,
+      requestedType: instagramContentType,
     });
 
+    if (!preparedMedia.mediaUrls.length) {
+      return res.status(400).json({
+        error: 'Instagram publishing requires at least one valid media file or URL',
+        code: 'INSTAGRAM_MEDIA_REQUIRED',
+      });
+    }
+
+    const publishResult = await publishInstagramPost({
+      accountId: account.account_id,
+      accessToken: account.access_token,
+      mediaUrls: preparedMedia.mediaUrls,
+      caption,
+      contentType: preparedMedia.contentType,
+      requestHost: req.get('host') || null,
+    });
+
+    logger.info('[internal/instagram/cross-post] Posted to Instagram', {
+      userId: platformUserId,
+      teamId: platformTeamId,
+      targetAccountId: account.id,
+      mediaCount: preparedMedia.mediaCount,
+      contentType: preparedMedia.contentType,
+    });
+
+    let historySave = null;
     try {
-      const historySave = await saveThreadsCrossPostHistory({
+      historySave = await saveInstagramCrossPostHistory({
         platformUserId,
-        mode: finalMode,
+        platformTeamId,
+        mode: normalizedMode,
         content: normalizedContent,
         threadParts: normalizedThreadParts,
         publishResult,
         mediaDetected: effectiveMediaDetected,
-        mediaUrls: usedMediaUrls,
-        threadsContentType: usedThreadsContentType,
-      });
-      logger.info('[internal/threads/cross-post] Saved Social history row for Threads cross-post', {
-        userId: platformUserId,
-        historyId: historySave.historyId,
-        mode: normalizedMode,
+        mediaUrls: preparedMedia.mediaUrls,
+        instagramContentType: preparedMedia.contentType,
       });
     } catch (historyError) {
-      logger.warn('[internal/threads/cross-post] Posted to Threads but failed to save social_posts history row', {
+      logger.warn('[internal/instagram/cross-post] Posted to Instagram but failed to save social_posts history row', {
         userId: platformUserId,
-        mode: normalizedMode,
+        teamId: platformTeamId,
         error: historyError?.message || String(historyError),
       });
     }
 
     return res.json({
       success: true,
-      status: 'posted',
-      mode: normalizedMode,
-      mediaDetected: Boolean(effectiveMediaDetected),
-      mediaStatus,
-      mediaCount,
-      publishId: publishResult?.publishId || null,
-      threadPostIds: Array.isArray(publishResult?.threadPostIds) ? publishResult.threadPostIds : [],
+      publishId: publishResult.publishId || publishResult.creationId || null,
+      creationId: publishResult.creationId || null,
+      accountId: account.id,
+      instagramContentType: preparedMedia.contentType,
+      mediaCount: preparedMedia.mediaCount,
+      mediaStatus: preparedMedia.mediaStatus,
+      history: historySave,
     });
   } catch (error) {
-    const mapped = mapThreadsServiceError(error);
-    logger.error('[internal/threads/cross-post] Failed to post to Threads', {
+    const mapped = mapInstagramServiceError(error);
+    logger.error('[internal/instagram/cross-post] Failed to post to Instagram', {
       userId: platformUserId,
-      mode: normalizedMode,
-      error: error?.message || String(error),
+      teamId: platformTeamId,
+      error: mapped.error,
       code: mapped.code,
-      status: mapped.status,
     });
 
     return res.status(mapped.status).json({

@@ -193,15 +193,13 @@ const DashboardPage = () => {
       <div>
         <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
         <p className="text-gray-600 mt-1">
-          {IS_THREADS_ONLY_MODE
-            ? 'Threads account overview, post activity, and engagement snapshot.'
-            : 'Connected Instagram + Threads + YouTube accounts, post activity, and engagement snapshot.'}
+          Connected social accounts, post activity, and engagement snapshot.
         </p>
       </div>
 
       {IS_THREADS_ONLY_MODE && (
         <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-blue-800">
-          <p className="text-sm font-medium">Threads-only mode</p>
+          <p className="text-sm font-medium">Platform rollout</p>
           <p className="text-sm mt-1">{THREADS_INVITE_MODE_NOTICE}</p>
         </div>
       )}

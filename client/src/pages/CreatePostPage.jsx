@@ -816,7 +816,7 @@ Rules:
 
       {IS_THREADS_ONLY_MODE && (
         <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-blue-800">
-          <p className="text-sm font-semibold">Threads-only mode enabled</p>
+          <p className="text-sm font-semibold">Platform rollout enabled</p>
           <p className="text-sm mt-1">{THREADS_INVITE_MODE_NOTICE}</p>
         </div>
       )}

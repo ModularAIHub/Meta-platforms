@@ -168,7 +168,7 @@ const ConnectedAccountsPage = () => {
 
       {IS_THREADS_ONLY_MODE && (
         <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-blue-800">
-          <p className="text-sm font-medium">Threads-only mode</p>
+          <p className="text-sm font-medium">Platform rollout</p>
           <p className="text-sm mt-1">{THREADS_INVITE_MODE_NOTICE}</p>
         </div>
       )}

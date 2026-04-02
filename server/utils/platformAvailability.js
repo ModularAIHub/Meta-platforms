@@ -28,14 +28,15 @@ export const resolveSocialPlatformMode = () => {
 };
 
 export const SOCIAL_PLATFORM_MODE = resolveSocialPlatformMode();
-
-const BASE_ENABLED_SOCIAL_PLATFORMS = SOCIAL_PLATFORM_MODE === 'threads_only'
-  ? new Set(['threads'])
-  : new Set(['instagram', 'youtube', 'threads']);
-
 export const INSTAGRAM_INVITE_ONLY_ENABLED = SOCIAL_PLATFORM_MODE === 'threads_only'
   ? parseBooleanEnv(process.env.INSTAGRAM_INVITE_ONLY_ENABLED, true)
   : false;
+export const INSTAGRAM_ENABLED = SOCIAL_PLATFORM_MODE === 'all'
+  ? true
+  : parseBooleanEnv(process.env.INSTAGRAM_ENABLED, false);
+export const YOUTUBE_ENABLED = SOCIAL_PLATFORM_MODE === 'all'
+  ? true
+  : parseBooleanEnv(process.env.YOUTUBE_ENABLED, false);
 
 const INSTAGRAM_INVITE_TESTER_EMAILS = new Set(
   parseCsvEnvList(process.env.INSTAGRAM_INVITE_TESTER_EMAILS, { lowerCase: true })
@@ -59,15 +60,22 @@ export const isSocialPlatformEnabledForUser = (platform, user = null) => {
   const normalizedPlatform = normalizeLower(platform);
   if (!normalizedPlatform) return false;
 
-  if (BASE_ENABLED_SOCIAL_PLATFORMS.has(normalizedPlatform)) {
+  if (normalizedPlatform === 'threads') {
     return true;
   }
 
-  if (normalizedPlatform !== 'instagram') {
-    return false;
+  if (normalizedPlatform === 'instagram') {
+    if (INSTAGRAM_ENABLED) {
+      return true;
+    }
+    return INSTAGRAM_INVITE_ONLY_ENABLED && isInstagramInviteTester(user);
   }
 
-  return INSTAGRAM_INVITE_ONLY_ENABLED && isInstagramInviteTester(user);
+  if (normalizedPlatform === 'youtube') {
+    return YOUTUBE_ENABLED;
+  }
+
+  return false;
 };
 
 export const getDisabledSocialPlatformsForUser = (platforms = [], user = null) =>
@@ -83,6 +91,7 @@ export const getPlatformModeErrorPayload = ({ platforms = [], user = null } = {}
     disabledPlatforms.length === 1 &&
     disabledPlatforms[0] === 'instagram' &&
     SOCIAL_PLATFORM_MODE === 'threads_only' &&
+    !INSTAGRAM_ENABLED &&
     INSTAGRAM_INVITE_ONLY_ENABLED;
 
   if (instagramInviteOnlyBlocked) {
@@ -90,6 +99,19 @@ export const getPlatformModeErrorPayload = ({ platforms = [], user = null } = {}
       error: 'Instagram is currently invite-only for approved testers. Ask for tester access to enable Instagram posting.',
       code: 'PLATFORM_DISABLED_IN_MODE',
       reason: 'instagram_invite_only',
+    };
+  }
+
+  const youtubeBlocked =
+    disabledPlatforms.length === 1 &&
+    disabledPlatforms[0] === 'youtube' &&
+    !YOUTUBE_ENABLED;
+
+  if (youtubeBlocked) {
+    return {
+      error: 'YouTube is disabled for this deployment. Enable the YouTube rollout envs, then reconnect and publish.',
+      code: 'PLATFORM_DISABLED_IN_MODE',
+      reason: 'youtube_rollout_disabled',
     };
   }
 

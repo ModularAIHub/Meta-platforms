@@ -2,7 +2,13 @@ import React, { useEffect, useState } from 'react';
 import { BarChart3, MessageCircle, Heart, Eye, Clock3, Users, AtSign } from 'lucide-react';
 import { analyticsApi } from '../utils/api';
 import LoadingSpinner from '../components/LoadingSpinner';
-import { IS_THREADS_ONLY_MODE, THREADS_INVITE_MODE_NOTICE } from '../config/platformAvailability';
+import {
+  INSTAGRAM_ENABLED,
+  INSTAGRAM_INVITE_ONLY_ENABLED,
+  IS_THREADS_ONLY_MODE,
+  THREADS_INVITE_MODE_NOTICE,
+  YOUTUBE_ENABLED,
+} from '../config/platformAvailability';
 
 const MetricCard = ({ label, value, icon: Icon, tint = 'blue' }) => {
   const colorMap = {
@@ -91,21 +97,19 @@ const AnalyticsPage = () => {
     totalScheduled: 0,
     totalDeleted: 0,
   };
+  const showInstagramAnalytics = !IS_THREADS_ONLY_MODE || INSTAGRAM_ENABLED || INSTAGRAM_INVITE_ONLY_ENABLED;
+  const showYoutubeAnalytics = !IS_THREADS_ONLY_MODE || YOUTUBE_ENABLED;
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold text-gray-900">Analytics</h1>
-        <p className="text-gray-600 mt-1">
-          {IS_THREADS_ONLY_MODE
-            ? 'Real aggregated stats from your saved Threads posts.'
-            : 'Real aggregated stats from your saved platform posts.'}
-        </p>
+        <p className="text-gray-600 mt-1">Real aggregated stats from your saved social posts.</p>
       </div>
 
       {IS_THREADS_ONLY_MODE && (
         <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-blue-800">
-          <p className="text-sm font-medium">Threads-only mode</p>
+          <p className="text-sm font-medium">Platform rollout</p>
           <p className="text-sm mt-1">{THREADS_INVITE_MODE_NOTICE}</p>
         </div>
       )}
@@ -143,7 +147,7 @@ const AnalyticsPage = () => {
         </div>
       </div>
 
-      {!IS_THREADS_ONLY_MODE && (
+      {showInstagramAnalytics && (
         <section className="space-y-3">
           <div className="flex items-center gap-2">
             <BarChart3 className="h-5 w-5 text-pink-600" />
@@ -171,7 +175,7 @@ const AnalyticsPage = () => {
         </div>
       </section>
 
-      {!IS_THREADS_ONLY_MODE && (
+      {showYoutubeAnalytics && (
         <section className="space-y-3">
           <div className="flex items-center gap-2">
             <BarChart3 className="h-5 w-5 text-red-600" />
