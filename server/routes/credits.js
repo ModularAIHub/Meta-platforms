@@ -28,8 +28,9 @@ router.get('/balance', async (req, res) => {
       balance,
       creditsRemaining: balance,
       source,
-      scope: source === 'team' ? 'team' : 'personal',
+      scope: source === 'team' ? 'team' : source === 'agency' ? 'agency' : 'personal',
       teamId: source === 'team' ? teamId : null,
+      agencyWorkspaceId: source === 'agency' ? (req.agencyWorkspace?.workspaceId || null) : null,
     });
   } catch (error) {
     try {
@@ -61,11 +62,15 @@ router.get('/history', async (req, res) => {
   try {
     const userId = req.user.id;
     const { page = 1, limit = 20, type } = req.query;
+    const teamId = resolveTeamId(req);
+    const userToken = resolveRequestToken(req);
 
     const history = await creditService.getUsageHistory(userId, {
       page: Number.parseInt(page, 10),
       limit: Number.parseInt(limit, 10),
       type: type || undefined,
+      teamId,
+      userToken,
     });
 
     return res.json(history);

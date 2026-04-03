@@ -55,6 +55,11 @@ export const TeamCreditService = {
 
   async getCredits(userId, teamId = null, userToken = null) {
     try {
+      if (creditService.getContextScope?.() === 'agency') {
+        const credits = await creditService.getBalance(userId, userToken, { teamId: null });
+        return { credits, source: 'agency' };
+      }
+
       if (shouldUseTeamCredits(teamId)) {
         const result = await pool.query('SELECT credits_remaining FROM teams WHERE id = $1', [teamId]);
 
@@ -112,7 +117,7 @@ export const TeamCreditService = {
         creditsAvailable: 0,
         required: roundCredits(amount),
         creditsRequired: roundCredits(amount),
-        source: shouldUseTeamCredits(teamId) ? 'team' : 'user',
+        source: creditService.getContextScope?.() === 'agency' ? 'agency' : (shouldUseTeamCredits(teamId) ? 'team' : 'user'),
       };
     }
   },
@@ -128,6 +133,17 @@ export const TeamCreditService = {
         creditsDeducted: 0,
         remainingCredits: credits,
         source,
+      };
+    }
+
+    if (creditService.getContextScope?.() === 'agency') {
+      const result = await creditService.checkAndDeductCredits(userId, operation, roundedAmount, userToken, {
+        description,
+      });
+
+      return {
+        ...result,
+        source: result.source || 'agency',
       };
     }
 
@@ -221,6 +237,17 @@ export const TeamCreditService = {
 
     if (roundedAmount <= 0) {
       return { success: true, refundedAmount: 0 };
+    }
+
+    if (creditService.getContextScope?.() === 'agency') {
+      const result = await creditService.refundCredits(userId, reason, roundedAmount, userToken, {
+        description,
+      });
+
+      return {
+        ...result,
+        source: result.source || 'agency',
+      };
     }
 
     if (!shouldUseTeamCredits(teamId)) {

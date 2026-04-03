@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../config/database.js';
+import { getRequestContext } from '../utils/requestContext.js';
 
 const PLATFORM_CREDIT_API_BASE = process.env.NEW_PLATFORM_API_URL || 'http://localhost:3000/api';
 const CREDIT_DEBUG = process.env.CREDIT_DEBUG === 'true';
@@ -30,6 +31,21 @@ const buildHeaders = (token, teamId = null) => {
   if (teamId) {
     headers['x-team-id'] = String(teamId);
   }
+
+  const context = getRequestContext();
+  const agencyToken = String(context?.agencyToken || '').trim();
+  const agencyWorkspaceId = String(context?.agencyWorkspaceId || '').trim();
+  const rawAuthorization = String(context?.authorization || '').trim();
+
+  if (agencyToken && agencyWorkspaceId) {
+    headers['x-agency-token'] = agencyToken;
+    headers['x-agency-workspace-id'] = agencyWorkspaceId;
+
+    if (!headers.Authorization && rawAuthorization) {
+      headers.Authorization = rawAuthorization;
+    }
+  }
+
   return headers;
 };
 
@@ -64,6 +80,15 @@ class CreditService {
     return { ...CREDIT_COSTS };
   }
 
+  getContextScope() {
+    const context = getRequestContext();
+    return context?.agencyToken && context?.agencyWorkspaceId ? 'agency' : 'personal';
+  }
+
+  shouldUsePlatformCredits(userToken = null) {
+    return Boolean((CREDIT_USE_PLATFORM_API && userToken) || (this.getContextScope() === 'agency' && userToken));
+  }
+
   calculateCost(operation, metadata = {}) {
     if (operation === 'social_post_create' || operation === 'social_post_schedule') {
       const platformCount = Math.max(1, Number.parseInt(metadata.platformCount || '1', 10));
@@ -79,7 +104,7 @@ class CreditService {
   async getBalance(userId, userToken = null, options = {}) {
     const { teamId = null } = options;
 
-    if (CREDIT_USE_PLATFORM_API && userToken) {
+    if (this.shouldUsePlatformCredits(userToken)) {
       try {
         this.debugLog('Fetching balance from platform API', { userId, teamId });
         const response = await axios.get(`${PLATFORM_CREDIT_API_BASE}/credits/balance`, {
@@ -115,7 +140,7 @@ class CreditService {
       };
     }
 
-    if (CREDIT_USE_PLATFORM_API && userToken) {
+    if (this.shouldUsePlatformCredits(userToken)) {
       try {
         this.debugLog('Deducting credits via platform API', {
           userId,
@@ -246,7 +271,7 @@ class CreditService {
       };
     }
 
-    if (CREDIT_USE_PLATFORM_API && userToken) {
+    if (this.shouldUsePlatformCredits(userToken)) {
       try {
         this.debugLog('Refunding credits via platform API', {
           userId,
@@ -332,6 +357,17 @@ class CreditService {
     const page = Math.max(1, Number.parseInt(options.page || '1', 10));
     const limit = Math.max(1, Math.min(100, Number.parseInt(options.limit || '20', 10)));
     const type = options.type ? String(options.type) : null;
+    const userToken = options.userToken || null;
+
+    if (this.shouldUsePlatformCredits(userToken)) {
+      const response = await axios.get(`${PLATFORM_CREDIT_API_BASE}/credits/history`, {
+        headers: buildHeaders(userToken, options.teamId || null),
+        params: { page, limit, ...(type ? { type } : {}) },
+        timeout: 10000,
+      });
+
+      return response.data;
+    }
 
     const filters = ['user_id = $1'];
     const params = [userId];

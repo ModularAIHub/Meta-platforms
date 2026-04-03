@@ -186,7 +186,11 @@ const Layout = ({ children }) => {
               {creditBalance !== null ? creditBalance.toFixed(1) : '--'}
             </p>
             <p className="text-xs text-blue-600 mt-1">
-              {creditScope === 'team' ? 'Available team credits' : 'Available credits'}
+              {creditScope === 'agency'
+                ? 'Available agency credits'
+                : creditScope === 'team'
+                  ? 'Available team credits'
+                  : 'Available credits'}
             </p>
           </div>
 

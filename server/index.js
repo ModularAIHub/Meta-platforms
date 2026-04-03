@@ -38,6 +38,7 @@ import cleanupRoutes from './routes/cleanup.js';
 
 import { requirePlatformLogin } from './middleware/requirePlatformLogin.js';
 import { applyAgencyWorkspaceContext } from './middleware/agencyWorkspace.js';
+import { captureRequestContext } from './utils/requestContext.js';
 import { resolveTeamContextMiddleware } from './middleware/resolveTeamContext.js';
 import { ensureSchema } from './config/schema.js';
 import { logger } from './utils/logger.js';
@@ -152,6 +153,7 @@ app.use(cookieParser());
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 app.use(applyAgencyWorkspaceContext);
+app.use(captureRequestContext);
 
 const setMetaDatabaseReady = () => {
   metaRuntimeState.database.ok = true;
