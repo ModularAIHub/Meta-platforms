@@ -116,6 +116,14 @@ export const generateAICaption = async (req, res) => {
       creditsRemaining: creditMeta.creditsRemaining,
     });
   } catch (error) {
+    if (String(error?.message || '').includes('No AI providers configured')) {
+      return res.status(503).json({
+        error: 'AI provider is not configured for this environment',
+        code: 'AI_PROVIDER_NOT_CONFIGURED',
+        details: error.message,
+      });
+    }
+
     return res.status(500).json({ error: 'Failed to generate caption', details: error.message });
   }
 };

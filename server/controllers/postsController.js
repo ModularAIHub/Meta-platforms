@@ -82,7 +82,10 @@ const resolveCaptionLimit = (platforms = []) => {
 };
 
 const resolveContextParams = (req) => {
-  const userId = req.user.id;
+  const userId = req.user?.id;
+  if (!userId) {
+    throw createHttpError(401, 'Unauthorized', 'UNAUTHORIZED');
+  }
   const { teamId, isTeamMember } = req.teamContext || {};
 
   return {
